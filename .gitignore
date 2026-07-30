@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# PyInstaller
+build/
+build_tmp/
+dist/
+*.manifest
+
+# Runtime output and machine-local settings
+logs/
+calibration/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
