@@ -1,0 +1,124 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Test and build Windows package
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Verify release version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $appVersion = (python -c "from core.build_info import APP_VERSION; print(APP_VERSION)").Trim()
+          $expectedTag = "v$appVersion"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Tag $env:GITHUB_REF_NAME does not match APP_VERSION $appVersion (expected $expectedTag)."
+          }
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build application
+        shell: pwsh
+        run: |
+          python -m PyInstaller build.spec `
+            --noconfirm `
+            --clean `
+            --distpath dist `
+            --workpath build_tmp
+
+      - name: Validate and package build
+        id: package
+        shell: pwsh
+        run: |
+          $exe = "dist/RGB_Capture/RGB_Capture.exe"
+          $buildInfo = "dist/RGB_Capture/_internal/build_info.json"
+          $model = "dist/RGB_Capture/_internal/models/brisque_model_live.yml"
+          $mvImport = "dist/RGB_Capture/_internal/MvImport/MvCameraControl_class.py"
+          foreach ($required in @($exe, $buildInfo, $model, $mvImport)) {
+            if (-not (Test-Path $required -PathType Leaf)) {
+              throw "Required build output is missing: $required"
+            }
+          }
+
+          $version = (python -c "from core.build_info import APP_VERSION; print(APP_VERSION)").Trim()
+          $archiveName = "RGB_Capture-v$version-windows-x86_64.zip"
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive `
+            -Path "dist/RGB_Capture/*" `
+            -DestinationPath "release/$archiveName" `
+            -CompressionLevel Optimal
+          $hash = (Get-FileHash "release/$archiveName" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archiveName" | Set-Content `
+            -Path "release/$archiveName.sha256" `
+            -Encoding ascii
+          "archive_name=$archiveName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: RGB_Capture-windows-x86_64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: RGB_Capture-windows-x86_64
+          path: release
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "RGB Capture $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
