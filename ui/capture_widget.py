@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
@@ -28,8 +29,13 @@ from PyQt6.QtWidgets import (
     QFrame, QScrollArea,
 )
 
-from core.camera import HikCamera, CameraError, DeviceInfo
 from core import naming, wb_config
+from core.acquisition_metadata import (
+    CaptureMetadata,
+    FrameSnapshot,
+    save_bgr_with_metadata,
+)
+from core.camera import HikCamera, CameraError, DeviceInfo
 from core.correction import FlatFieldCorrection
 from core.field_tag_lookup import (
     FieldTagDetection,
@@ -93,7 +99,7 @@ class ImageView(QGraphicsView):
       - 右上角:显示当前缩放百分比
       - 左上角:放大后显示全景缩略图 + 可视区框
 
-    保存路径不受显示缩放影响 — snap 走 stream.latest_bgr 全分辨率。
+    保存路径不受显示缩放影响 — snap 走 stream.latest_frame 全分辨率快照。
     """
 
     _MIN_ZOOM = 0.02
@@ -346,7 +352,7 @@ class CaptureWidget(QWidget):
     """采集 tab。mode='wheat' 显示 side 控件,'grain' 隐藏。"""
 
     # 抓拍后台线程 → 主线程的通讯信号(Qt 自动 QueuedConnection)
-    _snap_done = pyqtSignal(object, float)   # path, elapsed_seconds
+    _snap_done = pyqtSignal(object, float, object)  # path, elapsed_seconds, warnings
     _snap_failed = pyqtSignal(str)
     # BRISQUE 评分后台线程 → 主线程
     _brisque_done = pyqtSignal(object, float, float)   # path, score, elapsed
@@ -367,6 +373,8 @@ class CaptureWidget(QWidget):
         self._rotation_deg: int = 0
         self._latest_preview_bgr: Optional[np.ndarray] = None
         self._prefix_source: Literal["manual", "qr"] = "manual"
+        self._active_field_tag_code: Optional[str] = None
+        self._qr_request_code: Optional[str] = None
         self._qr_request_id: int = 0
         self._qr_request_pending: bool = False
         self._qr_reply: Optional[QNetworkReply] = None
@@ -397,6 +405,10 @@ class CaptureWidget(QWidget):
         self.spike_panel: Optional[SpikePanel] = None
         # 工作流模式下 snap → brisque 期间不放行下次抓拍
         self._workflow_pending: bool = False
+        # 写盘与 BRISQUE 并行；只有写盘成功后才能将已到达的评分结果
+        # 应用到工作流，避免评分极快时在保存失败前提前推进。
+        self._workflow_save_done: bool = False
+        self._workflow_quality_result: tuple[bool, float, str | None] | None = None
 
         self._build_ui()
         self._bind_signals()
@@ -575,7 +587,7 @@ class CaptureWidget(QWidget):
         row += 1
         lay.addWidget(QLabel("文件格式:"), row, 0)
         self.cb_format = QComboBox()
-        self.cb_format.addItems(["PNG", "JPG", "BMP", "TIFF"])
+        self.cb_format.addItems(["PNG", "JPG", "TIFF"])
         lay.addWidget(self.cb_format, row, 1, 1, 2)
 
         row += 1
@@ -968,6 +980,8 @@ class CaptureWidget(QWidget):
         changed = source != self._prefix_source
         self._prefix_source = source
         if source == "manual":
+            self._active_field_tag_code = None
+            self._qr_request_code = None
             self.view.clear_qr_outline()
             if changed:
                 self._invalidate_qr_request()
@@ -996,6 +1010,7 @@ class CaptureWidget(QWidget):
     def _invalidate_qr_request(self) -> None:
         """让检测线程/网络回调失效，并取消当前网络请求。"""
         self._qr_request_id += 1
+        self._qr_request_code = None
         reply = self._qr_reply
         self._qr_reply = None
         self._set_qr_request_pending(False)
@@ -1221,6 +1236,8 @@ class CaptureWidget(QWidget):
             self._clear_input_focus()
 
             wf_active = self.spike_panel is not None and self.spike_panel.workflow.active
+            current_rep: int | None = None
+            current_side: str | None = None
             if wf_active:
                 wf = self.spike_panel.workflow
                 cur = wf.current_step()
@@ -1228,6 +1245,8 @@ class CaptureWidget(QWidget):
                     self._err("工作流状态异常,请重置")
                     return
                 prefix = wf.prefix
+                current_rep = cur.rep
+                current_side = cur.side or None
             else:
                 prefix = self.le_prefix.text().strip()
                 if not prefix:
@@ -1240,10 +1259,11 @@ class CaptureWidget(QWidget):
                     return
 
             # 主线程只做 cheap 操作:拿 raw 帧(memcpy ~30ms)+ 读 UI 状态 + 算文件名
-            bgr_raw = self._get_current_frame_for_snap()
-            if bgr_raw is None:
+            frame_snapshot = self._get_current_frame_snapshot_for_snap()
+            if frame_snapshot is None:
                 self._err("当前没有可保存的画面,先点连续采集或单次采集")
                 return
+            bgr_raw = frame_snapshot.bgr
 
             # 快照 UI 状态(都是 cheap 操作,主线程做)
             rotation_deg = self._rotation_deg
@@ -1287,10 +1307,39 @@ class CaptureWidget(QWidget):
                 self._err(f"命名失败: {e}")
                 return
 
+            raw_h, raw_w = bgr_raw.shape[:2]
+            if rotation_deg in (90, 270):
+                output_width, output_height = raw_h, raw_w
+            else:
+                output_width, output_height = raw_w, raw_h
+            capture_metadata = self._create_capture_metadata(
+                frame_snapshot=frame_snapshot,
+                prefix=prefix,
+                workflow_active=wf_active,
+                rep=current_rep,
+                side=current_side,
+                path=full_path,
+                rotation_deg=rotation_deg,
+                ffc_applied=apply_ffc,
+                output_width=output_width,
+                output_height=output_height,
+            )
+            raw_metadata = (
+                replace(
+                    capture_metadata,
+                    filename=raw_path.name,
+                    image_variant="unffc_demosaiced",
+                    ffc_applied=False,
+                )
+                if raw_path is not None else None
+            )
+
             # 锁定 in-flight 状态(防快捷键 / 信号重入)
             self._snap_in_flight = True
             if wf_active:
                 self._workflow_pending = True
+                self._workflow_save_done = False
+                self._workflow_quality_result = None
         finally:
             # 任何 early-return(_err / 取消保存路径 / 命名失败) → 按钮复位
             # _snap_in_flight 仅在所有验证都通过时才设 True;
@@ -1333,18 +1382,37 @@ class CaptureWidget(QWidget):
 
             # 4) 写盘
             try:
-                self._save_bgr(bgr_to_save, full_path)
+                save_results = [
+                    save_bgr_with_metadata(
+                        bgr_to_save, full_path, capture_metadata,
+                    )
+                ]
                 if bgr_raw_to_save is not None and raw_path is not None:
-                    self._save_bgr(bgr_raw_to_save, raw_path)
-                self._snap_done.emit(full_path, time.perf_counter() - t0)
+                    if raw_metadata is None:
+                        raise RuntimeError("_raw 元数据状态异常")
+                    save_results.append(
+                        save_bgr_with_metadata(
+                            bgr_raw_to_save, raw_path, raw_metadata,
+                        )
+                    )
+                warnings = sorted({
+                    result.warning for result in save_results if result.warning
+                })
+                self._snap_done.emit(
+                    full_path, time.perf_counter() - t0, warnings,
+                )
             except Exception as exc:
                 log.exception("snap save failed")
                 self._snap_failed.emit(str(exc))
 
         threading.Thread(target=_process_worker, daemon=True).start()
 
-    def _on_snap_done(self, path: Path, elapsed: float) -> None:
+    def _on_snap_done(
+        self, path: Path, elapsed: float, warnings: list[str],
+    ) -> None:
         self._snap_in_flight = False
+        if warnings:
+            self.view.show_warning("；".join(warnings), 5000)
         # 提示音规则:只有"评分通过"才响(在 _on_brisque_done 里触发);
         # 若本张根本不评分(BRISQUE 不可用),则保存成功即响。
         no_scoring = not (self._brisque_ok and self.brisque is not None)
@@ -1352,6 +1420,7 @@ class CaptureWidget(QWidget):
             self._play_save_sound()
         # 工作流模式:保存完成后等 BRISQUE,按钮不放开
         if self._workflow_pending:
+            self._workflow_save_done = True
             # 如果 BRISQUE 不可用,此路径已无人通知,直接放行并默认通过。
             # 条件与启动 BRISQUE 线程的 do_brisque 完全一致,避免出现
             # "没人调 apply_pass → 工作流永久卡死"的缝隙。
@@ -1362,6 +1431,9 @@ class CaptureWidget(QWidget):
                 self.btn_snap.setEnabled(self.camera.is_connected())
                 self._status(f"保存完成({elapsed:.2f}s),无评分", side=True)
                 return
+            if self._workflow_quality_result is not None:
+                self._apply_pending_workflow_quality()
+                return
             self._status(f"保存完成({elapsed:.2f}s),评分中...", side=True)
             return
         self.btn_snap.setEnabled(self.camera.is_connected())
@@ -1371,6 +1443,8 @@ class CaptureWidget(QWidget):
     def _on_snap_failed(self, msg: str) -> None:
         self._snap_in_flight = False
         self._workflow_pending = False
+        self._workflow_save_done = False
+        self._workflow_quality_result = None
         self.btn_snap.setEnabled(self.camera.is_connected())
         self._err(f"保存失败: {msg}")
 
@@ -1443,12 +1517,9 @@ class CaptureWidget(QWidget):
 
         # 工作流路由
         if self._workflow_pending and self.spike_panel is not None:
-            if passed:
-                self.spike_panel.apply_pass(score)
-            else:
-                self.spike_panel.apply_fail(score)
-            self._workflow_pending = False
-            self.btn_snap.setEnabled(self.camera.is_connected())
+            self._workflow_quality_result = (passed, score, None)
+            if self._workflow_save_done:
+                self._apply_pending_workflow_quality()
 
     def _on_brisque_failed(self, path: Path, msg: str) -> None:
         log.warning("BRISQUE %s 失败: %s", path.name if path else "?", msg)
@@ -1456,10 +1527,29 @@ class CaptureWidget(QWidget):
         self.lbl_brisque_last.setStyleSheet("font-size: 14px; font-weight: 600; color: #888;")
         # 工作流路由:评分失败默认通过(图已存盘),不阻塞流程
         if self._workflow_pending and self.spike_panel is not None:
-            self.spike_panel.apply_pass(-1.0)
-            self._workflow_pending = False
-            self.btn_snap.setEnabled(self.camera.is_connected())
-            self._status("评分失败,默认通过", side=True)
+            self._workflow_quality_result = (
+                True, -1.0, "评分失败,默认通过",
+            )
+            if self._workflow_save_done:
+                self._apply_pending_workflow_quality()
+
+    def _apply_pending_workflow_quality(self) -> None:
+        """在写盘成功与评分都完成后，原子地推进一次工作流。"""
+        result = self._workflow_quality_result
+        panel = self.spike_panel
+        if not self._workflow_pending or result is None or panel is None:
+            return
+        passed, score, status = result
+        self._workflow_pending = False
+        self._workflow_save_done = False
+        self._workflow_quality_result = None
+        if passed:
+            panel.apply_pass(score)
+        else:
+            panel.apply_fail(score)
+        self.btn_snap.setEnabled(self.camera.is_connected())
+        if status:
+            self._status(status, side=True)
 
     def _append_capture_log(
         self, path: Path, score: float, passed: bool, elapsed: float,
@@ -1489,10 +1579,10 @@ class CaptureWidget(QWidget):
         except Exception:
             log.exception("写 capture_log.csv 失败")
 
-    def _get_current_frame_for_snap(self) -> np.ndarray | None:
-        # 优先用 stream 中的最新帧
+    def _get_current_frame_snapshot_for_snap(self) -> FrameSnapshot | None:
+        """取得图像与同一帧信息；SDK 缓冲释放后返回值仍可安全使用。"""
         if self._stream is not None:
-            return self._stream.latest_bgr
+            return self._stream.latest_frame
         # 没在采集 → 临时取一帧
         try:
             self.camera.start_grabbing()
@@ -1501,7 +1591,8 @@ class CaptureWidget(QWidget):
                 return None
             bgr, raw = result
             try:
-                return bgr.copy()
+                frame_metadata = self.camera.copy_frame_metadata(raw)
+                return FrameSnapshot(bgr=bgr.copy(), metadata=frame_metadata)
             finally:
                 self.camera.free_frame(raw)
         except CameraError as e:
@@ -1513,25 +1604,87 @@ class CaptureWidget(QWidget):
             except CameraError:
                 pass
 
-    def _save_bgr(self, bgr: np.ndarray, path: Path) -> None:
-        """用 cv2 保存,避开中文路径问题(MV_CC_SaveImageToFileEx 不支持非 ASCII 路径)。
-        编码参数调过:PNG 压缩 1(快,体积变化几乎察觉不到);JPG 质量 92。"""
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def _get_current_frame_for_snap(self) -> np.ndarray | None:
+        """兼容 FFC 参考采集：只返回图像，抓拍保存使用配对快照接口。"""
+        snapshot = self._get_current_frame_snapshot_for_snap()
+        return None if snapshot is None else snapshot.bgr
+
+    def _create_capture_metadata(
+        self,
+        *,
+        frame_snapshot: FrameSnapshot,
+        prefix: str,
+        workflow_active: bool,
+        rep: int | None,
+        side: str | None,
+        path: Path,
+        rotation_deg: int,
+        ffc_applied: bool,
+        output_width: int,
+        output_height: int,
+    ) -> CaptureMetadata:
+        """在主线程快照所有 UI/相机状态，后台保存线程只读该不可变对象。"""
+        device = self.camera.device
+
+        def float_readback(key: str) -> float | None:
+            value = self.camera.get_float(key)
+            return None if value is None else float(value[0])
+
+        def enabled_int(widget: QSpinBox) -> int | None:
+            return int(widget.value()) if widget.isEnabled() else None
+
+        def enabled_float(widget: QDoubleSpinBox) -> float | None:
+            return float(widget.value()) if widget.isEnabled() else None
+
         ext = path.suffix.lower()
-        params: list[int] = []
-        if ext in (".jpg", ".jpeg"):
-            params = [cv2.IMWRITE_JPEG_QUALITY, 92, cv2.IMWRITE_JPEG_OPTIMIZE, 0]
-        elif ext == ".png":
-            # 0 = 不压缩(最快但文件最大);1 = 最快有损耗的压缩;3 = 默认偏中
-            # 实测 25MP 图:压缩 1 比 3 快 2-3 倍,文件大约只大 5-10%
-            params = [cv2.IMWRITE_PNG_COMPRESSION, 1]
-        elif ext in (".tif", ".tiff"):
-            # 1 = no compression(最快)
-            params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
-        ok, buf = cv2.imencode(ext, bgr, params)
-        if not ok:
-            raise RuntimeError(f"cv2.imencode 失败({ext})")
-        buf.tofile(str(path))
+        wb_mode = self.cb_wb.currentData()
+        return CaptureMetadata(
+            capture_id=CaptureMetadata.new_capture_id(),
+            captured_at=frame_snapshot.metadata.received_at,
+            accession_no=prefix,
+            prefix_source=self._prefix_source,
+            field_tag_code=(
+                self._active_field_tag_code
+                if self._prefix_source == "qr" else None
+            ),
+            mode=self.mode,
+            workflow_active=workflow_active,
+            rep=rep,
+            side=side,
+            filename=path.name,
+            image_variant="processed",
+            device_manufacturer=(device.manufacturer or None) if device else None,
+            device_model=(device.model or None) if device else None,
+            device_serial=(device.serial or None) if device else None,
+            device_transport=(device.transport or None) if device else None,
+            device_ip=(device.ip or None) if device else None,
+            frame=frame_snapshot.metadata,
+            exposure_readback_us=float_readback("ExposureTime"),
+            gain_readback=float_readback("Gain"),
+            exposure_auto_code=self.camera.get_enum("ExposureAuto"),
+            gain_auto_code=self.camera.get_enum("GainAuto"),
+            trigger_mode_code=self.camera.get_enum("TriggerMode"),
+            white_balance_mode=str(wb_mode) if wb_mode is not None else None,
+            white_balance_red=int(self.sp_wb_r.value()),
+            white_balance_green=int(self.sp_wb_g.value()),
+            white_balance_blue=int(self.sp_wb_b.value()),
+            brightness=enabled_int(self.sp_brightness),
+            gamma=enabled_float(self.sp_gamma),
+            saturation=enabled_int(self.sp_saturation),
+            contrast=enabled_int(self.sp_contrast),
+            sharpness=enabled_int(self.sp_sharpness),
+            output_format=ext.lstrip(".").upper(),
+            jpeg_quality=92 if ext in (".jpg", ".jpeg") else None,
+            png_compression=1 if ext == ".png" else None,
+            tiff_compression="none" if ext in (".tif", ".tiff") else None,
+            rotation_deg=rotation_deg,
+            ffc_applied=ffc_applied,
+            ffc_has_flat=self.correction.has_flat,
+            ffc_has_dark=self.correction.has_dark,
+            ffc_calibration_id=self.correction.reference_id,
+            output_width=output_width,
+            output_height=output_height,
+        )
 
     # ============================== 路径 ==============================
 
@@ -2093,6 +2246,7 @@ class CaptureWidget(QWidget):
             return
         if self._prefix_source == "manual":
             # 手动模式保持旧行为：启动时去除输入框两端空白。
+            self._active_field_tag_code = None
             self.spike_panel.start_with_prefix(self.le_prefix.text().strip())
             return
         self._start_from_field_tag_qr()
@@ -2101,6 +2255,8 @@ class CaptureWidget(QWidget):
         """以当前预览帧启动一次不可重入的挂牌识别请求。"""
         if self._qr_request_pending or self._shutting_down:
             return
+        self._active_field_tag_code = None
+        self._qr_request_code = None
         bearer = self.le_bearer_key.text()
         if not bearer:
             self.view.show_warning("请先输入 Bearer 密钥", 5000)
@@ -2164,6 +2320,7 @@ class CaptureWidget(QWidget):
         if self._prefix_source != "qr" or self._shutting_down:
             self._invalidate_qr_request()
             return
+        self._qr_request_code = result.code
         self.view.show_qr_outline(result.points, 5000)
         self._request_field_tag_api(request_id, result.code)
 
@@ -2273,7 +2430,8 @@ class CaptureWidget(QWidget):
             self._invalidate_qr_request()
             return
         self.le_prefix.setText(accession)
-        self.spike_panel.start_with_prefix(accession)
+        started = self.spike_panel.start_with_prefix(accession)
+        self._active_field_tag_code = self._qr_request_code if started else None
         self._set_qr_request_pending(False)
 
     def _spike_precheck(self) -> tuple[bool, str]:
@@ -2301,6 +2459,8 @@ class CaptureWidget(QWidget):
 
     def _on_workflow_state_changed(self, active: bool) -> None:
         """工作流启用/禁用时,锁定/解锁普通的文件名设置控件。"""
+        if not active:
+            self._active_field_tag_code = None
         self._update_prefix_source_controls()
         if self.sp_repeat is not None:
             self.sp_repeat.setEnabled(not active)
@@ -2313,6 +2473,7 @@ class CaptureWidget(QWidget):
 
     def _clear_prefix_after_workflow(self) -> None:
         """整轮工作流完成自动重置时清空品种前缀,防止下一品种忘改覆盖照片。"""
+        self._active_field_tag_code = None
         self.le_prefix.clear()
         if self._prefix_source == "manual":
             self.le_prefix.setFocus()

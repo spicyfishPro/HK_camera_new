@@ -1,7 +1,9 @@
 # 运行依赖(同 hk_camera 环境实际版本)
 PyQt6==6.11.0
-opencv-python==4.13.0
+opencv-python==4.13.0.92
 numpy==2.4.4
+# 该版本要求 Python >= 3.12；Windows 打包环境需保持一致
+tifffile==2026.7.14
 
 # 打包用(运行不需要,只在生成 exe 时用)
 pyinstaller==6.20.0

@@ -5,6 +5,7 @@ import sys
 import types
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -118,6 +119,13 @@ class QrUiTests(unittest.TestCase):
             self.widget.le_bearer_key.echoMode(), QLineEdit.EchoMode.Password
         )
 
+    def test_only_metadata_capable_formats_are_available(self):
+        formats = [
+            self.widget.cb_format.itemText(i)
+            for i in range(self.widget.cb_format.count())
+        ]
+        self.assertEqual(formats, ["PNG", "JPG", "TIFF"])
+
     def test_manual_mode_starts_with_existing_trimmed_prefix_behavior(self):
         start = Mock(return_value=True)
         self.widget.spike_panel.start_with_prefix = start
@@ -151,6 +159,7 @@ class QrUiTests(unittest.TestCase):
         start = Mock(return_value=True)
         self.widget.spike_panel.start_with_prefix = start
         self.widget._qr_request_id = 5
+        self.widget._qr_request_code = "PABC123"
         self.widget._set_qr_request_pending(True)
         reply = _FakeReply(
             200, b'{"material": {"accession_no": "CK"}}'
@@ -160,6 +169,48 @@ class QrUiTests(unittest.TestCase):
         start.assert_called_once_with("CK")
         self.assertFalse(self.widget._qr_request_pending)
         self.assertTrue(reply.deleted)
+        self.assertEqual(self.widget._active_field_tag_code, "PABC123")
+
+    def test_metadata_warning_is_shown_without_turning_save_into_failure(self):
+        self.widget.view.show_warning = Mock()
+        self.widget._on_snap_done(
+            Path("sample.png"), 0.1,
+            ["照片已保存，但未写入采集元数据"],
+        )
+        self.widget.view.show_warning.assert_called_once_with(
+            "照片已保存，但未写入采集元数据", 5000,
+        )
+        self.assertFalse(self.widget._snap_in_flight)
+
+    def test_fast_brisque_waits_for_successful_image_save(self):
+        panel = self.widget.spike_panel
+        panel.apply_pass = Mock()
+        panel.apply_fail = Mock()
+        self.widget._workflow_pending = True
+        self.widget._workflow_save_done = False
+        self.widget._snap_in_flight = True
+        with patch.object(self.widget, "_append_capture_log"):
+            self.widget._on_brisque_done(Path("sample.png"), 5.0, 0.01)
+        panel.apply_pass.assert_not_called()
+
+        self.widget._on_snap_done(Path("sample.png"), 0.1, [])
+        panel.apply_pass.assert_called_once_with(5.0)
+        panel.apply_fail.assert_not_called()
+        self.assertFalse(self.widget._workflow_pending)
+
+    def test_failed_image_save_discards_early_brisque_result(self):
+        panel = self.widget.spike_panel
+        panel.apply_pass = Mock()
+        self.widget._workflow_pending = True
+        self.widget._workflow_save_done = False
+        self.widget._snap_in_flight = True
+        with patch.object(self.widget, "_append_capture_log"):
+            self.widget._on_brisque_done(Path("sample.png"), 5.0, 0.01)
+        with patch.object(self.widget, "_err"):
+            self.widget._on_snap_failed("disk full")
+        panel.apply_pass.assert_not_called()
+        self.assertFalse(self.widget._workflow_pending)
+        self.assertIsNone(self.widget._workflow_quality_result)
 
     def test_http_and_response_errors_never_start(self):
         self._select_qr_mode()

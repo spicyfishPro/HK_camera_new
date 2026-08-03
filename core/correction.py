@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 from pathlib import Path
@@ -57,6 +58,8 @@ class FlatFieldCorrection:
         # 给状态显示用
         self._flat_mean: Optional[np.ndarray] = None  # mean(F-D)
         self._dark_mean: Optional[np.ndarray] = None  # mean(D)
+        # 参考内容的稳定标识；仅在采集/加载/清除参考时计算，不进入逐张抓拍热路径。
+        self._reference_id: Optional[str] = None
 
     # ---------------- 状态 ----------------
 
@@ -92,6 +95,28 @@ class FlatFieldCorrection:
     def reference_shape(self) -> Optional[tuple[int, ...]]:
         return None if self._flat_full is None else self._flat_full.shape
 
+    @property
+    def reference_id(self) -> Optional[str]:
+        return self._reference_id
+
+    def _refresh_reference_id(self) -> None:
+        digest = hashlib.sha256()
+        present = False
+        for name, array in (
+            ("flat", self._flat_full),
+            ("dark", self._dark_full),
+            ("legacy_gain", self._gain_full if self._flat_full is None else None),
+        ):
+            if array is None:
+                continue
+            present = True
+            contiguous = np.ascontiguousarray(array)
+            digest.update(name.encode("ascii"))
+            digest.update(str(contiguous.dtype).encode("ascii"))
+            digest.update(repr(contiguous.shape).encode("ascii"))
+            digest.update(memoryview(contiguous).cast("B"))
+        self._reference_id = digest.hexdigest() if present else None
+
     # ---------------- 多帧平均(可选辅助) ----------------
 
     @staticmethod
@@ -126,6 +151,7 @@ class FlatFieldCorrection:
 
         self._recompute_gain()
         self._invalidate_display_cache()
+        self._refresh_reference_id()
 
         log.info(
             "FFC dark set: shape=%s mean(BGR)=%s max=%s",
@@ -161,6 +187,7 @@ class FlatFieldCorrection:
         self._recompute_gain()
         self._invalidate_display_cache()
         self._enabled = True
+        self._refresh_reference_id()
 
         log.info(
             "FFC flat set: shape=%s flat_mean(BGR)=%s min=%s max=%s dark_present=%s",
@@ -213,6 +240,7 @@ class FlatFieldCorrection:
         with self._full_buf_lock:
             self._full_signal_buf = None   # 释放抓拍 buffer(~300MB)
         self._enabled = False
+        self._refresh_reference_id()
         log.info("FFC references cleared (both dark and flat)")
 
     def clear_dark(self) -> None:
@@ -221,6 +249,7 @@ class FlatFieldCorrection:
         self._dark_mean = None
         self._recompute_gain()
         self._invalidate_display_cache()
+        self._refresh_reference_id()
         log.info("FFC dark cleared (flat retained)")
 
     def clear_flat(self) -> None:
@@ -232,6 +261,7 @@ class FlatFieldCorrection:
         with self._full_buf_lock:
             self._full_signal_buf = None   # 释放抓拍 buffer,清亮场后不再需要
         self._enabled = False
+        self._refresh_reference_id()
         log.info("FFC flat cleared")
 
     def _invalidate_display_cache(self) -> None:
@@ -360,6 +390,7 @@ class FlatFieldCorrection:
             self._recompute_gain()
             self._invalidate_display_cache()
             self._enabled = True
+            self._refresh_reference_id()
             log.info(
                 "FFC loaded (new format) %s shape=%s dark=%s",
                 path, self._flat_full.shape, "yes" if self._dark_full is not None else "no",
@@ -373,6 +404,7 @@ class FlatFieldCorrection:
             self._dark_mean = None
             self._invalidate_display_cache()
             self._enabled = True
+            self._refresh_reference_id()
             log.warning(
                 "FFC loaded (legacy format, no flat raw) %s shape=%s — 升级提示:重新采集一次以启用暗场",
                 path, self._gain_full.shape,

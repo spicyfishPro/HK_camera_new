@@ -16,6 +16,7 @@ from typing import Optional
 
 import numpy as np
 
+from .acquisition_metadata import FrameMetadata
 from .paths import MVIMPORT_DIR as _MV_IMPORT_DIR
 
 if str(_MV_IMPORT_DIR) not in sys.path:
@@ -431,6 +432,11 @@ class HikCamera:
     def free_frame(self, frame: "MV_FRAME_OUT") -> None:
         if self._cam is not None and frame is not None:
             self._cam.MV_CC_FreeImageBuffer(frame)
+
+    @staticmethod
+    def copy_frame_metadata(frame: "MV_FRAME_OUT") -> FrameMetadata:
+        """在释放 SDK 缓冲前复制逐帧信息，返回值不再依赖 ctypes 指针。"""
+        return FrameMetadata.from_mvs_frame(frame, _pixel_format_name)
 
     def _frame_to_bgr(self, frame: "MV_FRAME_OUT") -> np.ndarray:
         import cv2
