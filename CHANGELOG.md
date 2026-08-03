@@ -1,6 +1,6 @@
 # Changelog
 
-## [unreleased] - 2026-06-10
+## [2.1.0] - 2026-08-03
 
 ### Features
 - **GitHub 自动化交付**:推送和 PR 在 Windows/Python 3.12 上自动执行完整单元测试；`v*` 版本标签通过测试后构建 PyInstaller onedir，校验关键文件，生成 ZIP 与 SHA-256 并发布 GitHub Release。官方 Actions 固定到不可变提交 SHA。
