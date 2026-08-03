@@ -86,7 +86,8 @@ jobs:
           $hash = (Get-FileHash "release/$archiveName" -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $archiveName" | Set-Content `
             -Path "release/$archiveName.sha256" `
-            -Encoding ascii
+            -Encoding ascii `
+            -NoNewline
           "archive_name=$archiveName" >> $env:GITHUB_OUTPUT
 
       - name: Upload build artifact
@@ -112,6 +113,10 @@ jobs:
         with:
           name: RGB_Capture-windows-x86_64
           path: release
+
+      - name: Verify release checksum
+        working-directory: release
+        run: sha256sum --check *.sha256
 
       - name: Publish release
         env:

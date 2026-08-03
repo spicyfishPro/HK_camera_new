@@ -1,5 +1,10 @@
 # Changelog
 
+## [unreleased]
+
+### Fixes
+- **Release 校验文件兼容性**:SHA-256 文件改为无 CRLF 歧义的 ASCII 内容，并在 Linux 发布任务中实际执行 `sha256sum --check`，防止不可验证的附件进入 Release。
+
 ## [2.1.0] - 2026-08-03
 
 ### Features
