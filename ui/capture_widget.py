@@ -36,6 +36,7 @@ from core.acquisition_metadata import (
     save_bgr_with_metadata,
 )
 from core.camera import HikCamera, CameraError, DeviceInfo
+from core.capture_processing import ReusableImageRotator
 from core.correction import FlatFieldCorrection
 from core.field_tag_lookup import (
     FieldTagDetection,
@@ -370,7 +371,8 @@ class CaptureWidget(QWidget):
         self._stream: Optional[StreamWorker] = None
         self._save_dir: Optional[Path] = None
         self._devices: list[DeviceInfo] = []
-        self._rotation_deg: int = 0
+        self._rotation_deg: int = 180
+        self._save_rotator = ReusableImageRotator()
         self._latest_preview_bgr: Optional[np.ndarray] = None
         self._prefix_source: Literal["manual", "qr"] = "manual"
         self._active_field_tag_code: Optional[str] = None
@@ -386,6 +388,17 @@ class CaptureWidget(QWidget):
         self._qr_timeout_timer.timeout.connect(self._on_field_tag_request_timeout)
         # 防止参数回填触发 setter
         self._loading_params: bool = False
+        # 元数据热路径不再每张通过 SDK 回读。连接/刷新/成功设置时
+        # 更新这些值，抓拍时只快照内存字典。
+        self._metadata_float_cache: dict[str, float | None] = {
+            "ExposureTime": None,
+            "Gain": None,
+        }
+        self._metadata_enum_cache: dict[str, int | None] = {
+            "ExposureAuto": None,
+            "GainAuto": None,
+            "TriggerMode": None,
+        }
         # 抓拍并发护栏 —— 防 spacebar / 按钮叠加触发
         self._snap_in_flight: bool = False
         # 平场校正(FFC) — 每个 tab 一份(麦穗/籽粒可能光照不同)
@@ -722,6 +735,7 @@ class CaptureWidget(QWidget):
         self.cb_rotate = QComboBox()
         for d in (0, 90, 180, 270):
             self.cb_rotate.addItem(f"{d}°", d)
+        self.cb_rotate.setCurrentIndex(self.cb_rotate.findData(180))
         lay.addWidget(self.cb_rotate, r, 1, 1, 2)
 
         r += 1
@@ -1089,6 +1103,7 @@ class CaptureWidget(QWidget):
         wb, source = wb_config.active_wb()
         log.info("[%s] 连接后应用白平衡: %s (来源=%s)", self.mode, wb, source)
         self._apply_wb_to_camera(wb)
+        self._refresh_metadata_enum_cache()
         self._refresh_wb_preset_label()
         self._update_button_states()
         self._status("相机已连接", side=True)
@@ -1102,6 +1117,8 @@ class CaptureWidget(QWidget):
             except CameraError as e:
                 self._err(str(e))
         self.view.clear_display()
+        self._save_rotator.clear()
+        self._clear_metadata_camera_cache()
         self._fill_device_info(None)
         self._update_button_states()
         self._status("相机已断开", side=True)
@@ -1163,7 +1180,16 @@ class CaptureWidget(QWidget):
         self._update_button_states(streaming=False)
 
     def _on_frame(self, bgr: np.ndarray) -> None:
-        self._show_preview_frame(self._apply_rotation(bgr))
+        # 保存期间丢弃已在 Qt 队列中的最后一帧，让画面从
+        # 按下抓拍到写盘完成保持冻结。无论显示还是丢弃都必须归还单槽。
+        sender = self.sender()
+        stream = sender if isinstance(sender, StreamWorker) else self._stream
+        try:
+            if not self._snap_in_flight:
+                self._show_preview_frame(self._apply_rotation(bgr))
+        finally:
+            if stream is not None:
+                stream.display_consumed()
 
     def _show_preview_frame(self, bgr: np.ndarray) -> None:
         """缓存与画面实际一致的已旋转预览帧。"""
@@ -1229,6 +1255,10 @@ class CaptureWidget(QWidget):
             self._err("请先连接相机")
             return
 
+        click_t0 = time.perf_counter()
+        snapshot_elapsed_s = 0.0
+        stream_for_snap: StreamWorker | None = None
+        pause_requested = False
         # 立即 disable 按钮 — 后面的验证/取帧可能阻塞到 2s,这段时间不能让用户重复点
         self.btn_snap.setEnabled(False)
         try:
@@ -1258,12 +1288,18 @@ class CaptureWidget(QWidget):
                 if not self._prompt_save_dir():
                     return
 
-            # 主线程只做 cheap 操作:拿 raw 帧(memcpy ~30ms)+ 读 UI 状态 + 算文件名
+            # 连续取流时 latest_frame 返回寿命安全的只读引用，不再
+            # 复制整张 75MiB BGR。取得快照后立即请求取流线程暂停。
+            stream_for_snap = self._stream
+            snapshot_t0 = time.perf_counter()
             frame_snapshot = self._get_current_frame_snapshot_for_snap()
+            snapshot_elapsed_s = time.perf_counter() - snapshot_t0
             if frame_snapshot is None:
                 self._err("当前没有可保存的画面,先点连续采集或单次采集")
                 return
             bgr_raw = frame_snapshot.bgr
+            if stream_for_snap is not None:
+                pause_requested = stream_for_snap.request_pause()
 
             # 快照 UI 状态(都是 cheap 操作,主线程做)
             rotation_deg = self._rotation_deg
@@ -1345,65 +1381,135 @@ class CaptureWidget(QWidget):
             # _snap_in_flight 仅在所有验证都通过时才设 True;
             # 若仍为 False,说明 snap 中途放弃了,要把按钮放回去
             if not self._snap_in_flight:
+                if pause_requested and stream_for_snap is not None:
+                    stream_for_snap.resume()
                 self.btn_snap.setEnabled(self.camera.is_connected())
 
         def _process_worker():
-            """重活在这条线程做:FFC → 旋转 → 启动 BRISQUE 并行线程 → 保存。"""
-            t0 = time.perf_counter()
-            # 1) FFC(只对要保存的主图做,_raw 不做)
-            if apply_ffc:
-                bgr_corrected = self.correction.apply_full(bgr_raw)
-            else:
-                bgr_corrected = bgr_raw
-            # 2) 旋转
-            bgr_to_save = self._rotate_static(bgr_corrected, rotation_deg)
-            bgr_raw_to_save = (
-                self._rotate_static(bgr_raw, rotation_deg) if save_raw_too else None
-            )
-
-            # 3) 启动 BRISQUE 线程(只要 bgr 准备好就开,不等 save)
-            if do_brisque:
-                bgr_for_score = bgr_to_save
-
-                def _brisque_worker():
-                    tb = time.perf_counter()
-                    try:
-                        score = self.brisque.score_ndarray(bgr_for_score)
-                    except Exception as exc:
-                        log.exception("brisque error")
-                        self._brisque_failed.emit(full_path, str(exc))
-                        return
-                    if score is None:
-                        self._brisque_failed.emit(full_path, "BRISQUE 返回 None")
-                        return
-                    self._brisque_done.emit(full_path, score, time.perf_counter() - tb)
-
-                threading.Thread(target=_brisque_worker, daemon=True).start()
-
-            # 4) 写盘
+            """暂停取流后执行 FFC → 旋转 → BRISQUE 快照 → 编码写盘。"""
+            pause_wait_s = 0.0
+            ffc_s = 0.0
+            rotate_s = 0.0
+            quality_prepare_s = 0.0
+            main_save_s = 0.0
+            raw_save_s = 0.0
+            resume_s = 0.0
+            success = False
+            failure: Exception | None = None
+            warnings: list[str] = []
             try:
-                save_results = [
-                    save_bgr_with_metadata(
-                        bgr_to_save, full_path, capture_metadata,
+                if pause_requested and stream_for_snap is not None:
+                    pause_t0 = time.perf_counter()
+                    paused = stream_for_snap.wait_until_paused(timeout_s=1.0)
+                    pause_wait_s = time.perf_counter() - pause_t0
+                    if not paused:
+                        log.warning(
+                            "capture stream pause timeout after %.3fs; continue saving",
+                            pause_wait_s,
+                        )
+
+                # 1) FFC(只对要保存的主图做,_raw 不做)
+                stage_t0 = time.perf_counter()
+                if apply_ffc:
+                    bgr_corrected = self.correction.apply_full(bgr_raw)
+                else:
+                    bgr_corrected = bgr_raw
+                ffc_s = time.perf_counter() - stage_t0
+
+                # 2) 固定 180° 常用路径复用预分配缓冲。主图/_raw 分槽，
+                # 防止评分线程还在读主图时被原图覆写。
+                stage_t0 = time.perf_counter()
+                bgr_to_save = self._save_rotator.rotate(
+                    bgr_corrected, rotation_deg, slot="main",
+                )
+                bgr_raw_to_save = (
+                    self._save_rotator.rotate(
+                        bgr_raw, rotation_deg, slot="raw",
                     )
-                ]
+                    if save_raw_too else None
+                )
+                rotate_s = time.perf_counter() - stage_t0
+
+                # 3) 评分线程只持有 1024px 小图，不持有会被下一次
+                # 抓拍复用的全分辨率旋转缓冲。
+                if do_brisque and self.brisque is not None:
+                    stage_t0 = time.perf_counter()
+                    bgr_for_score = self.brisque.prepare_ndarray(bgr_to_save)
+                    quality_prepare_s = time.perf_counter() - stage_t0
+
+                    def _brisque_worker():
+                        tb = time.perf_counter()
+                        try:
+                            score = self.brisque.score_prepared(bgr_for_score)
+                        except Exception as exc:
+                            log.exception("brisque error")
+                            self._brisque_failed.emit(full_path, str(exc))
+                            return
+                        if score is None:
+                            self._brisque_failed.emit(full_path, "BRISQUE 返回 None")
+                            return
+                        self._brisque_done.emit(
+                            full_path, score, time.perf_counter() - tb,
+                        )
+
+                    threading.Thread(target=_brisque_worker, daemon=True).start()
+
+                # 4) 主图和可选 _raw 串行写盘，仍保持单次编码内嵌 XMP。
+                stage_t0 = time.perf_counter()
+                save_results = [save_bgr_with_metadata(
+                    bgr_to_save, full_path, capture_metadata,
+                )]
+                main_save_s = time.perf_counter() - stage_t0
                 if bgr_raw_to_save is not None and raw_path is not None:
                     if raw_metadata is None:
                         raise RuntimeError("_raw 元数据状态异常")
+                    stage_t0 = time.perf_counter()
                     save_results.append(
                         save_bgr_with_metadata(
                             bgr_raw_to_save, raw_path, raw_metadata,
                         )
                     )
+                    raw_save_s = time.perf_counter() - stage_t0
                 warnings = sorted({
                     result.warning for result in save_results if result.warning
                 })
-                self._snap_done.emit(
-                    full_path, time.perf_counter() - t0, warnings,
-                )
+                success = True
             except Exception as exc:
                 log.exception("snap save failed")
-                self._snap_failed.emit(str(exc))
+                failure = exc
+            finally:
+                if pause_requested and stream_for_snap is not None:
+                    resume_t0 = time.perf_counter()
+                    stream_for_snap.resume()
+                    resume_s = time.perf_counter() - resume_t0
+
+            total_s = time.perf_counter() - click_t0
+            file_bytes = 0
+            for saved_path in (full_path, raw_path):
+                if saved_path is not None:
+                    try:
+                        file_bytes += saved_path.stat().st_size
+                    except OSError:
+                        pass
+            log.info(
+                "capture perf status=%s total=%.3fs snapshot=%.3fs pause=%.3fs "
+                "ffc=%.3fs rotate=%.3fs quality_prepare=%.3fs main_save=%.3fs "
+                "raw_save=%.3fs resume=%.3fs size=%.1fMiB streaming=%s "
+                "format=%s rotation=%d ffc_enabled=%s raw_enabled=%s "
+                "png_compression=%s png_strategy=default path=%s",
+                "ok" if success else "failed",
+                total_s, snapshot_elapsed_s, pause_wait_s, ffc_s, rotate_s,
+                quality_prepare_s, main_save_s, raw_save_s, resume_s,
+                file_bytes / (1024 * 1024), stream_for_snap is not None,
+                ext, rotation_deg, apply_ffc, save_raw_too,
+                1 if ext == "png" else "n/a", full_path,
+            )
+            if success:
+                self._snap_done.emit(full_path, total_s, warnings)
+            else:
+                self._snap_failed.emit(
+                    str(failure) if failure is not None else "未知保存错误"
+                )
 
         threading.Thread(target=_process_worker, daemon=True).start()
 
@@ -1626,10 +1732,6 @@ class CaptureWidget(QWidget):
         """在主线程快照所有 UI/相机状态，后台保存线程只读该不可变对象。"""
         device = self.camera.device
 
-        def float_readback(key: str) -> float | None:
-            value = self.camera.get_float(key)
-            return None if value is None else float(value[0])
-
         def enabled_int(widget: QSpinBox) -> int | None:
             return int(widget.value()) if widget.isEnabled() else None
 
@@ -1638,6 +1740,20 @@ class CaptureWidget(QWidget):
 
         ext = path.suffix.lower()
         wb_mode = self.cb_wb.currentData()
+        exposure_readback = self._metadata_float_cache["ExposureTime"]
+        gain_readback = self._metadata_float_cache["Gain"]
+        # 自动曝光/增益可在两次 UI 参数刷新之间变化；优先使用
+        # SDK 随帧水印中的实际值，仍然不需要在抓拍热路径访问相机。
+        if (
+            self._metadata_enum_cache["ExposureAuto"] not in (None, 0)
+            and frame_snapshot.metadata.exposure_time_us is not None
+        ):
+            exposure_readback = frame_snapshot.metadata.exposure_time_us
+        if (
+            self._metadata_enum_cache["GainAuto"] not in (None, 0)
+            and frame_snapshot.metadata.gain is not None
+        ):
+            gain_readback = frame_snapshot.metadata.gain
         return CaptureMetadata(
             capture_id=CaptureMetadata.new_capture_id(),
             captured_at=frame_snapshot.metadata.received_at,
@@ -1659,11 +1775,11 @@ class CaptureWidget(QWidget):
             device_transport=(device.transport or None) if device else None,
             device_ip=(device.ip or None) if device else None,
             frame=frame_snapshot.metadata,
-            exposure_readback_us=float_readback("ExposureTime"),
-            gain_readback=float_readback("Gain"),
-            exposure_auto_code=self.camera.get_enum("ExposureAuto"),
-            gain_auto_code=self.camera.get_enum("GainAuto"),
-            trigger_mode_code=self.camera.get_enum("TriggerMode"),
+            exposure_readback_us=exposure_readback,
+            gain_readback=gain_readback,
+            exposure_auto_code=self._metadata_enum_cache["ExposureAuto"],
+            gain_auto_code=self._metadata_enum_cache["GainAuto"],
+            trigger_mode_code=self._metadata_enum_cache["TriggerMode"],
             white_balance_mode=str(wb_mode) if wb_mode is not None else None,
             white_balance_red=int(self.sp_wb_r.value()),
             white_balance_green=int(self.sp_wb_g.value()),
@@ -1797,8 +1913,22 @@ class CaptureWidget(QWidget):
             fps = self.camera.get_float("ResultingFrameRate")
             self.lbl_fps.setText(f"{fps[0]:.1f}" if fps else "-")
             self.lbl_pixel.setText(self.camera.pixel_format_name())
+            self._refresh_metadata_enum_cache()
         finally:
             self._loading_params = False
+
+    def _refresh_metadata_enum_cache(self) -> None:
+        """参数刷新/连接时一次性回读元数据所需的枚举节点。"""
+        if not self.camera.is_connected():
+            return
+        for key in self._metadata_enum_cache:
+            self._metadata_enum_cache[key] = self.camera.get_enum(key)
+
+    def _clear_metadata_camera_cache(self) -> None:
+        for key in self._metadata_float_cache:
+            self._metadata_float_cache[key] = None
+        for key in self._metadata_enum_cache:
+            self._metadata_enum_cache[key] = None
 
     # Red=0, Green=1, Blue=2 — 海康 BalanceRatioSelector 枚举常量
     _WB_CHANNEL_IDX = {"Red": 0, "Green": 1, "Blue": 2}
@@ -1844,8 +1974,12 @@ class CaptureWidget(QWidget):
         v = self.camera.get_float(key)
         if v is None:
             spin.setEnabled(False)
+            if key in self._metadata_float_cache:
+                self._metadata_float_cache[key] = None
             return
         cur, lo, hi = v
+        if key in self._metadata_float_cache:
+            self._metadata_float_cache[key] = float(cur)
         spin.setEnabled(True)
         spin.blockSignals(True)
         spin.setRange(lo, hi)
@@ -1869,6 +2003,11 @@ class CaptureWidget(QWidget):
             return
         try:
             self.camera.set_float(key, value)
+            if key in self._metadata_float_cache:
+                readback = self.camera.get_float(key)
+                self._metadata_float_cache[key] = (
+                    float(readback[0]) if readback is not None else float(value)
+                )
         except CameraError as e:
             log.warning("set %s=%s failed: %s", key, value, e)
 
@@ -1885,6 +2024,11 @@ class CaptureWidget(QWidget):
             return
         try:
             self.camera.set_enum(key, int(value))
+            if key in self._metadata_enum_cache:
+                readback = self.camera.get_enum(key)
+                self._metadata_enum_cache[key] = (
+                    int(readback) if readback is not None else int(value)
+                )
         except CameraError as e:
             log.warning("set enum %s=%s failed: %s", key, value, e)
 
@@ -1893,6 +2037,10 @@ class CaptureWidget(QWidget):
             return
         try:
             self.camera.set_enum_string(key, str(value))
+            if key in self._metadata_enum_cache:
+                # 字符串枚举的数值由相机型号决定，只在参数修改时
+                # 回读一次，不把 SDK 访问留在每张抓拍的热路径。
+                self._metadata_enum_cache[key] = self.camera.get_enum(key)
         except CameraError as e:
             log.warning("set enum-str %s=%s failed: %s", key, value, e)
 
@@ -2488,6 +2636,8 @@ class CaptureWidget(QWidget):
         """关闭程序前调用,确保线程和设备资源被释放。"""
         self._shutting_down = True
         self._latest_preview_bgr = None
+        self._save_rotator.clear()
+        self._clear_metadata_camera_cache()
         self._invalidate_qr_request()
         try:
             if self._stream is not None:

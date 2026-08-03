@@ -46,13 +46,55 @@ class StreamWorker(QThread):
         self._cam = camera
         self._correction = correction
         self._stop = False
+        self._state = threading.Condition()
+        self._pause_requested = False
+        self._paused = False
         self._lock = threading.Lock()
         self._latest_frame: FrameSnapshot | None = None
+        # Qt queued signal 没有自带背压。只允许一张预览帧处于
+        # "已 emit、主线程尚未显示"状态，避免 25MP 长时取流时堆积。
+        self._display_slot_available = threading.Event()
+        self._display_slot_available.set()
         self._last_emit_ts: float = 0.0
         self._emit_interval: float = 1.0 / _DISPLAY_MAX_FPS
 
     def stop(self) -> None:
-        self._stop = True
+        with self._state:
+            self._stop = True
+            self._pause_requested = False
+            self._state.notify_all()
+        self._display_slot_available.set()
+
+    def request_pause(self) -> bool:
+        """请求取流线程在自身线程内 StopGrabbing。
+
+        返回 False 表示线程已在停止，调用方不应再等待暂停确认。
+        """
+        with self._state:
+            if self._stop:
+                return False
+            self._pause_requested = True
+            self._state.notify_all()
+            return True
+
+    def wait_until_paused(self, timeout_s: float = 1.0) -> bool:
+        """等待 StopGrabbing 完成；超时或线程停止时返回 False。"""
+        with self._state:
+            self._state.wait_for(
+                lambda: self._paused or self._stop,
+                timeout=max(0.0, float(timeout_s)),
+            )
+            return self._paused and not self._stop
+
+    def resume(self) -> None:
+        """撤销暂停请求，由取流线程自行 StartGrabbing。"""
+        with self._state:
+            self._pause_requested = False
+            self._state.notify_all()
+
+    def display_consumed(self) -> None:
+        """主线程已显示/丢弃上一帧，允许下次预览 emit。"""
+        self._display_slot_available.set()
 
     @property
     def latest_bgr(self) -> np.ndarray | None:
@@ -65,20 +107,70 @@ class StreamWorker(QThread):
 
     @property
     def latest_frame(self) -> FrameSnapshot | None:
-        """原子取得图像与其帧信息，防止二者来自不同帧。"""
+        """原子取得图像与帧信息的只读强引用。
+
+        取流线程只会用新 FrameSnapshot 替换缓存，不会覆写旧
+        ndarray；因此调用方持有返回值时旧帧仍然有效，无需再复制 75MiB。
+        """
         with self._lock:
-            return None if self._latest_frame is None else self._latest_frame.copy()
+            return self._latest_frame
 
     def run(self) -> None:
-        self._stop = False
+        with self._state:
+            if self._stop:
+                self._state.notify_all()
+                return
+            self._paused = False
+            self._state.notify_all()
         consecutive_fail = 0
+        grabbing = False
         try:
             self._cam.start_grabbing()
+            grabbing = True
         except Exception as e:
             self.error.emit(f"开始取流失败: {e}")
+            with self._state:
+                self._stop = True
+                self._state.notify_all()
             return
 
-        while not self._stop:
+        while True:
+            with self._state:
+                stop_requested = self._stop
+                pause_requested = self._pause_requested
+            if stop_requested:
+                break
+
+            if pause_requested:
+                try:
+                    if grabbing:
+                        self._cam.stop_grabbing()
+                        grabbing = False
+                except Exception as e:
+                    self.error.emit(f"暂停取流失败: {e}")
+                    break
+
+                with self._state:
+                    self._paused = True
+                    self._state.notify_all()
+                    self._state.wait_for(
+                        lambda: not self._pause_requested or self._stop
+                    )
+                    self._paused = False
+                    stop_requested = self._stop
+                    self._state.notify_all()
+                if stop_requested:
+                    break
+                try:
+                    self._cam.start_grabbing()
+                    grabbing = True
+                except Exception as e:
+                    self.error.emit(f"恢复取流失败: {e}")
+                    break
+                # 恢复后立即取一帧，不受上次显示节流时间影响。
+                self._last_emit_ts = 0.0
+                continue
+
             try:
                 result = self._cam.grab_frame_bgr(timeout_ms=500)
             except Exception as e:
@@ -96,6 +188,9 @@ class StreamWorker(QThread):
             bgr, raw_frame = result
             try:
                 frame_metadata = self._cam.copy_frame_metadata(raw_frame)
+                # 快照路径会直接持有这个 ndarray，用只读标志固化
+                # "只替换引用、不覆写旧帧"的约定。
+                bgr.setflags(write=False)
                 with self._lock:
                     self._latest_frame = FrameSnapshot(
                         bgr=bgr,
@@ -103,19 +198,35 @@ class StreamWorker(QThread):
                     )
                 # 限频 + 降采样 + 校正后再 emit
                 now = time.monotonic()
-                if now - self._last_emit_ts >= self._emit_interval:
-                    disp = self._downscale_for_display(bgr)
-                    if self._correction is not None and self._correction.enabled:
-                        disp = self._correction.apply_display(disp)
-                    self.frame_ready.emit(disp)
-                    self._last_emit_ts = now
+                due = now - self._last_emit_ts >= self._emit_interval
+                if due and self._display_slot_available.is_set():
+                    # 只有取流线程会 clear，主线程只会 set。
+                    self._display_slot_available.clear()
+                    try:
+                        disp = self._downscale_for_display(bgr)
+                        if self._correction is not None and self._correction.enabled:
+                            disp = self._correction.apply_display(disp)
+                        self.frame_ready.emit(disp)
+                        self._last_emit_ts = now
+                    except Exception:
+                        # emit/预览处理失败不能永久占用单槽。
+                        self._display_slot_available.set()
+                        raise
+            except Exception as e:
+                self.error.emit(f"帧处理异常: {e}")
+                break
             finally:
                 self._cam.free_frame(raw_frame)
 
-        try:
-            self._cam.stop_grabbing()
-        except Exception as e:
-            log.warning("StopGrabbing 异常: %s", e)
+        if grabbing:
+            try:
+                self._cam.stop_grabbing()
+            except Exception as e:
+                log.warning("StopGrabbing 异常: %s", e)
+        with self._state:
+            self._paused = False
+            self._stop = True
+            self._state.notify_all()
 
     @staticmethod
     def _downscale_for_display(bgr: np.ndarray) -> np.ndarray:

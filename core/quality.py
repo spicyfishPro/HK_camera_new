@@ -144,18 +144,30 @@ class BRISQUEScorer:
         new_h = int(round(h * scale))
         return cv2.resize(bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-    def score_ndarray(self, bgr: np.ndarray) -> Optional[float]:
-        """在内存里的 BGR 图算 BRISQUE。失败返回 None。"""
+    def prepare_ndarray(self, bgr: np.ndarray) -> np.ndarray:
+        """生成与全分辨率/复用旋转缓冲脱离的评分快照。"""
+        arr = self._prepare(bgr)
+        # 原图已小于目标时 _prepare 会返回入参本身；这里仍需
+        # 复制，否则下一次抓拍可能覆写 ReusableImageRotator 的缓冲。
+        return np.ascontiguousarray(arr).copy() if arr is bgr else arr
+
+    def score_prepared(self, bgr: np.ndarray) -> Optional[float]:
+        """对已准备好的小图评分，不再读取全分辨率缓冲。"""
         if bgr is None or bgr.size == 0:
             return None
         try:
-            arr = self._prepare(bgr)
             with self._compute_lock:
-                result = self._brisque.compute(arr)
+                result = self._brisque.compute(bgr)
             return float(result[0])
         except Exception:
             log.exception("BRISQUE compute 失败")
             return None
+
+    def score_ndarray(self, bgr: np.ndarray) -> Optional[float]:
+        """在内存里的 BGR 图算 BRISQUE。失败返回 None。"""
+        if bgr is None or bgr.size == 0:
+            return None
+        return self.score_prepared(self.prepare_ndarray(bgr))
 
     def score_file(self, path: Path | str) -> Optional[float]:
         """从磁盘读图后评分。中文路径用 np.fromfile + imdecode 兜底。"""

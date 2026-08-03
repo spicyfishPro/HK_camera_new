@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from core.correction import FlatFieldCorrection
+from core.capture_processing import ReusableImageRotator
 from core.naming import build_filename, next_serial, resolve_conflict
 from core.quality import is_pass
 from core.spike_workflow import SpikeWorkflow
@@ -82,6 +83,26 @@ class WorkflowRegressionTests(unittest.TestCase):
 
 
 class FfcAndQualityRegressionTests(unittest.TestCase):
+    def test_reusable_rotator_uses_exact_180_degree_pixels(self):
+        rotator = ReusableImageRotator()
+        image = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
+        rotated = rotator.rotate(image, 180)
+        np.testing.assert_array_equal(rotated, image[::-1, ::-1])
+
+        first_buffer_id = id(rotated)
+        rotated_again = rotator.rotate(image + 1, 180)
+        self.assertEqual(id(rotated_again), first_buffer_id)
+        np.testing.assert_array_equal(rotated_again, (image + 1)[::-1, ::-1])
+
+    def test_reusable_rotator_keeps_main_and_raw_buffers_separate(self):
+        rotator = ReusableImageRotator()
+        image = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+        main = rotator.rotate(image, 180, slot="main")
+        main_pixels = main.copy()
+        raw = rotator.rotate(image + 10, 180, slot="raw")
+        self.assertIsNot(main, raw)
+        np.testing.assert_array_equal(main, main_pixels)
+
     def test_uniform_flat_field_keeps_uniform_image(self):
         correction = FlatFieldCorrection()
         image = np.full((10, 12, 3), 100, dtype=np.uint8)

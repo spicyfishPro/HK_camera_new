@@ -55,6 +55,12 @@ class _FakeScorer:
     def compute(self, _image):
         return 0.0
 
+    def prepare_ndarray(self, image):
+        return image.copy()
+
+    def score_prepared(self, _image):
+        return 0.0
+
 
 class _FakeReply:
     def __init__(self, status, payload=b"", error=None):
@@ -125,6 +131,10 @@ class QrUiTests(unittest.TestCase):
             for i in range(self.widget.cb_format.count())
         ]
         self.assertEqual(formats, ["PNG", "JPG", "TIFF"])
+
+    def test_rotation_defaults_to_180_degrees(self):
+        self.assertEqual(self.widget.cb_rotate.currentData(), 180)
+        self.assertEqual(self.widget._rotation_deg, 180)
 
     def test_manual_mode_starts_with_existing_trimmed_prefix_behavior(self):
         start = Mock(return_value=True)
