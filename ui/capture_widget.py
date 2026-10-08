@@ -359,6 +359,8 @@ class CaptureWidget(QWidget):
     _qr_detection_failed = pyqtSignal(int, str)        # request_id, safe_message
     # 两个页签之间仅在内存中同步，不接入任何持久化配置。
     bearer_key_changed = pyqtSignal(str)
+    # 手动设备操作接管后，取消主窗口尚未执行的启动自动流程。
+    device_control_requested = pyqtSignal()
 
     _pipeline_event = pyqtSignal(object)
 
@@ -1055,12 +1057,18 @@ class CaptureWidget(QWidget):
 
     # ============================== 设备 ==============================
 
-    def refresh_devices(self) -> None:
+    def refresh_devices(self, *, automatic: bool = False) -> list[DeviceInfo] | None:
+        if not automatic:
+            self.device_control_requested.emit()
         try:
             devs = HikCamera.enumerate()
         except CameraError as e:
-            self._err(str(e))
-            return
+            if automatic:
+                log.warning("[%s] 自动刷新设备失败: %s", self.mode, e)
+                self._status(f"自动刷新设备失败: {e}", side=True)
+            else:
+                self._err(str(e))
+            return None
         self._devices = devs
         self.lst_devices.clear()
         if not devs:
@@ -1068,24 +1076,30 @@ class CaptureWidget(QWidget):
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.lst_devices.addItem(item)
             self._status("未检测到相机", side=True)
-            return
+            return devs
         for d in devs:
             self.lst_devices.addItem(QListWidgetItem(d.display))
         self.lst_devices.setCurrentRow(0)
         self._status(f"已发现 {len(devs)} 台相机", side=True)
+        return devs
 
-    def connect_device(self) -> None:
+    def connect_device(self, *, automatic: bool = False) -> bool:
+        if not automatic:
+            self.device_control_requested.emit()
         if self.camera.is_connected():
-            return
+            return True
         row = self.lst_devices.currentRow()
         if row < 0 or row >= len(self._devices):
-            self._err("请先在设备列表中选择一台相机")
-            return
+            if not automatic:
+                self._err("请先在设备列表中选择一台相机")
+            return False
         try:
-            info = self.camera.connect(row)
+            info = self.camera.connect(self._devices[row].index, single_device_only=automatic)
         except CameraError as e:
+            if automatic:
+                raise
             self._err(str(e))
-            return
+            return False
         self._fill_device_info(info)
         self.reload_params_from_camera()
         # 默认增益强制为 0:
@@ -1121,8 +1135,10 @@ class CaptureWidget(QWidget):
         self._refresh_wb_preset_label()
         self._update_button_states()
         self._status("相机已连接", side=True)
+        return True
 
     def disconnect_device(self) -> None:
+        self.device_control_requested.emit()
         if self._stream is not None:
             self._stop_stream()
         if self.camera.is_connected():
@@ -1152,8 +1168,15 @@ class CaptureWidget(QWidget):
     # ============================== 采集 ==============================
 
     def toggle_streaming(self) -> None:
+        self.device_control_requested.emit()
         if self._stream is not None:
             self._stop_stream()
+            return
+        self.start_streaming()
+
+    def start_streaming(self) -> None:
+        """只启动、不切换状态，供启动自动流程安全复用。"""
+        if self._stream is not None or self._closing or self._shutting_down:
             return
         if not self.camera.is_connected():
             self._err("请先连接相机")
@@ -1217,6 +1240,7 @@ class CaptureWidget(QWidget):
         self._update_button_states(streaming=False)
 
     def single_capture(self) -> None:
+        self.device_control_requested.emit()
         if not self.camera.is_connected():
             self._err("请先连接相机")
             return
@@ -2452,6 +2476,7 @@ class CaptureWidget(QWidget):
 
     def shutdown(self) -> None:
         """关闭程序前调用,确保线程和设备资源被释放。"""
+        self.device_control_requested.emit()
         if self.pipeline.owner_pending(self._owner):
             return False
         self._shutting_down = True

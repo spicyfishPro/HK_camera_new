@@ -239,10 +239,11 @@ def finalize_sdk() -> None:
 
 
 class CameraError(Exception):
-    def __init__(self, op: str, code: int):
+    def __init__(self, op: str, code: int, *, device_count: int | None = None):
         super().__init__(f"{op} 失败: {hex_err(code)}")
         self.op = op
         self.code = code
+        self.device_count = device_count
 
 
 class HikCamera:
@@ -269,38 +270,29 @@ class HikCamera:
         result: list[DeviceInfo] = []
         for i in range(dev_list.nDeviceNum):
             info = cast(dev_list.pDeviceInfo[i], POINTER(MV_CC_DEVICE_INFO)).contents
-            t = info.nTLayerType
-            if t == MV_GIGE_DEVICE or t == MV_GENTL_GIGE_DEVICE:
-                gi = info.SpecialInfo.stGigEInfo
-                ip = ".".join(str((gi.nCurrentIp >> shift) & 0xFF) for shift in (24, 16, 8, 0))
-                result.append(DeviceInfo(
-                    index=i, transport="GigE",
-                    model=_decode(gi.chModelName),
-                    serial=_decode(gi.chSerialNumber),
-                    manufacturer=_decode(gi.chManufacturerName),
-                    ip=ip,
-                ))
-            elif t == MV_USB_DEVICE:
-                ui = info.SpecialInfo.stUsb3VInfo
-                result.append(DeviceInfo(
-                    index=i, transport="USB3",
-                    model=_decode(ui.chModelName),
-                    serial=_decode(ui.chSerialNumber),
-                    manufacturer=_decode(ui.chManufacturerName),
-                ))
-            else:
-                # CXP / XoF / CameraLink 也列出来,字段尽力填
-                result.append(DeviceInfo(
-                    index=i, transport="Other",
-                    model="UnknownTransport",
-                    serial="",
-                    manufacturer="",
-                ))
+            result.append(HikCamera._describe_device(i, info))
         return result
+
+    @staticmethod
+    def _describe_device(index: int, info) -> DeviceInfo:
+        if info.nTLayerType in (MV_GIGE_DEVICE, MV_GENTL_GIGE_DEVICE):
+            gi = info.SpecialInfo.stGigEInfo
+            ip = ".".join(str((gi.nCurrentIp >> shift) & 0xFF) for shift in (24, 16, 8, 0))
+            return DeviceInfo(
+                index=index, transport="GigE", model=_decode(gi.chModelName),
+                serial=_decode(gi.chSerialNumber), manufacturer=_decode(gi.chManufacturerName), ip=ip,
+            )
+        if info.nTLayerType == MV_USB_DEVICE:
+            ui = info.SpecialInfo.stUsb3VInfo
+            return DeviceInfo(
+                index=index, transport="USB3", model=_decode(ui.chModelName),
+                serial=_decode(ui.chSerialNumber), manufacturer=_decode(ui.chManufacturerName),
+            )
+        return DeviceInfo(index=index, transport="Other", model="UnknownTransport", serial="", manufacturer="")
 
     # ---------------- 连接 / 断开 ----------------
 
-    def connect(self, dev_index: int) -> DeviceInfo:
+    def connect(self, dev_index: int, *, single_device_only: bool = False) -> DeviceInfo:
         if self._cam is not None:
             raise CameraError("连接", -1)
 
@@ -309,7 +301,13 @@ class HikCamera:
         ret = MvCamera.MV_CC_EnumDevices(_TLAYER_ALL, dev_list)
         if ret != 0:
             raise CameraError("枚举设备", ret)
-        if dev_index >= dev_list.nDeviceNum:
+        # 刷新列表后可能有设备插拔；自动连接须在创建句柄前再次确认。
+        if single_device_only and dev_list.nDeviceNum != 1:
+            raise CameraError(
+                f"自动连接要求恰好一台相机（发现 {dev_list.nDeviceNum} 台）", -1,
+                device_count=int(dev_list.nDeviceNum),
+            )
+        if dev_index < 0 or dev_index >= dev_list.nDeviceNum:
             raise CameraError(f"设备索引越界({dev_index}/{dev_list.nDeviceNum})", -1)
 
         info = cast(dev_list.pDeviceInfo[dev_index], POINTER(MV_CC_DEVICE_INFO)).contents
@@ -351,7 +349,8 @@ class HikCamera:
         )
 
         # 摘要返回上层
-        summary = self.enumerate()[dev_index]
+        # 使用刚打开的设备信息，不再重新枚举并按可能已变化的索引取摘要。
+        summary = self._describe_device(dev_index, info)
         self._device_summary = summary
         log.info("连接成功: %s", summary.display)
         return summary
