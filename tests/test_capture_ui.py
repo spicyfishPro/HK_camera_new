@@ -33,6 +33,13 @@ class CaptureUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        from ui.style import DARK_QSS
+        cls.previous_style = cls.app.styleSheet()
+        cls.app.setStyleSheet(DARK_QSS)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.setStyleSheet(cls.previous_style)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

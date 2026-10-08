@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 45
     env:
       PYTHONUTF8: "1"
-      QT_QPA_PLATFORM: offscreen
+      QT_QPA_PLATFORM: windows
 
     steps:
       - name: Check out repository
