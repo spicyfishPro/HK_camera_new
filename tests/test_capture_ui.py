@@ -161,9 +161,10 @@ class CaptureUiTests(unittest.TestCase):
                 state,
             )
 
-        g.update_event(event("old", "preparing"))
-        g.update_event(event("new", "preparing"))
-        g.update_event(event("old", "failed"))
+        with patch("ui.photo_gallery.time.time", return_value=1.0):
+            g.update_event(event("old", "preparing"))
+            g.update_event(event("new", "preparing"))
+            g.update_event(event("old", "failed"))
         self.assertEqual(g.model.entries[0].key, "new")
         self.assertTrue(g.retry.isEnabled())
         retried = []

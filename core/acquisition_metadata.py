@@ -310,6 +310,8 @@ def save_bgr_plain(bgr: np.ndarray, path: Path) -> None:
     ok, buf = cv2.imencode(ext, bgr, _encoding_params(ext))
     if not ok:
         raise RuntimeError(f"cv2.imencode 失败({ext})")
+    log.info("capture memory encoding_buffer_bytes=%s input_bytes=%s path=%s",
+             buf.nbytes, bgr.nbytes, path.name)
     buf.tofile(str(path))
 
 
@@ -332,6 +334,8 @@ def _save_jpeg_or_png_with_xmp(
     if not ok:
         raise RuntimeError("OpenCV XMP 元数据编码失败")
     encoded = time.perf_counter()
+    log.info("capture memory encoding_buffer_bytes=%s input_bytes=%s path=%s",
+             buf.nbytes, bgr.nbytes, path.name)
     buf.tofile(str(path))
     return encoded - started, time.perf_counter() - encoded
 
@@ -341,6 +345,8 @@ def _save_tiff_with_xmp(bgr: np.ndarray, path: Path, xmp: bytes) -> None:
 
     # TIFF photometric=RGB 要求通道次序为 RGB；这是首次且唯一一次编码。
     rgb = np.ascontiguousarray(bgr[:, :, ::-1])
+    log.info("capture memory tiff_rgb_buffer_bytes=%s input_bytes=%s path=%s",
+             rgb.nbytes, bgr.nbytes, path.name)
     tifffile.imwrite(
         str(path),
         rgb,

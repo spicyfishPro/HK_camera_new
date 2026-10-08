@@ -43,6 +43,10 @@ class CorrectionSnapshot:
         if bgr.shape != self.gain.shape:
             raise ValueError("照片尺寸与拍摄时的 FFC 参考不一致")
         work = bgr.astype(np.float32)
+        log.info(
+            "capture memory ffc_workspace_bytes=%s ffc_reference_bytes=%s",
+            work.nbytes, self.gain.nbytes + (self.dark.nbytes if self.dark is not None else 0),
+        )
         if self.dark is not None:
             np.subtract(work, self.dark, out=work)
         np.multiply(work, self.gain, out=work)

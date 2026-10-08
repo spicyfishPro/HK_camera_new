@@ -72,6 +72,7 @@ class PhotoEntry:
     passed: bool = True
     message: str = ""
     modified: float = 0.0
+    sequence: int = 0
 
     @property
     def label(self):
@@ -404,6 +405,7 @@ class PhotoGallery(QWidget):
         self.ext = "png"
         self.total = 0
         self.generation = 0
+        self._event_sequence = 0
         self.current = (None, "")
         self.entries: dict[str, PhotoEntry] = {}
         self.cache = ThumbnailCache()
@@ -532,6 +534,7 @@ class PhotoGallery(QWidget):
             found,
             key=lambda e: (
                 e.state != "history",
+                e.sequence,
                 e.path is not None and e.path.suffix.lower() == "." + self.ext,
                 e.modified,
             ),
@@ -587,11 +590,16 @@ class PhotoGallery(QWidget):
                     del self.entries[key]
         existing = self.entries.get(event.id)
         modified = existing.modified if existing else time.time()
+        if existing:
+            sequence = existing.sequence
+        else:
+            self._event_sequence += 1
+            sequence = self._event_sequence
         for key, entry in list(self.entries.items()):
             if (
                 entry.path == event.path
                 and key != event.id
-                and entry.modified <= modified
+                and entry.sequence < sequence
                 and entry.state in ("saved", "capture_failed")
             ):
                 del self.entries[key]
@@ -608,6 +616,7 @@ class PhotoGallery(QWidget):
             event.passed,
             event.message,
             modified,
+            sequence,
         )
         for key, arr in (
             (event.id, event.thumbnail),
