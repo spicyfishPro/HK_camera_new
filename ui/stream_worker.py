@@ -169,7 +169,6 @@ class StreamWorker(QThread):
             return
 
         last_read = 0.0
-        last_cleared = 0.0
         while True:
             with self._state:
                 stop_requested = self._stop
@@ -222,7 +221,7 @@ class StreamWorker(QThread):
             try:
                 with self._state:
                     to_clear = [key for key, (requested, arrived) in self._fresh_requests.items()
-                                if arrived is None and requested > last_cleared]
+                                if arrived is None and key not in self._fresh_errors]
                 if to_clear:
                     clear = getattr(self._cam, "clear_image_buffer", None)
                     # 相机替身可省略；正式 SDK wrapper 始终提供此方法。
@@ -232,7 +231,6 @@ class StreamWorker(QThread):
                                 if key in self._fresh_requests:
                                     self._fresh_errors[key] = "无法清理相机旧帧缓存，请重新连接后抓拍"
                             self._state.notify_all()
-                    last_cleared = read_started
                 result = self._cam.grab_frame_bgr(timeout_ms=500)
             except Exception as e:
                 self.error.emit(f"取流异常: {e}")
@@ -259,8 +257,14 @@ class StreamWorker(QThread):
                     )
                     snapshot = self._latest_frame
                 with self._state:
-                    for request_id, (requested_at, arrived) in list(self._fresh_requests.items()):
-                        if arrived is None and read_started >= requested_at and request_id not in self._fresh_errors:
+                    # 只交付本轮读取开始前已登记并清过缓存的请求。
+                    # Windows monotonic 时钟可能出现相等时间戳，不能用时间比较
+                    # 将读取中途到达的请求误绑定到当前帧。
+                    for request_id in to_clear:
+                        if request_id not in self._fresh_requests:
+                            continue
+                        requested_at, arrived = self._fresh_requests[request_id]
+                        if arrived is None and request_id not in self._fresh_errors:
                             self._fresh_requests[request_id] = (requested_at, snapshot)
                     self._state.notify_all()
                 # 限频 + 降采样 + 校正后再 emit

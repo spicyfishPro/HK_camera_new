@@ -188,6 +188,43 @@ if __name__ == "__main__":
 
 
 class FreshSnapshotTests(unittest.TestCase):
+    def test_equal_clock_ticks_still_require_a_new_read(self):
+        camera = _FakeCamera()
+        started = threading.Event()
+        release = threading.Event()
+        original_grab = camera.grab_frame_bgr
+
+        def grab(timeout_ms=500):
+            if camera.frame_number == 0:
+                started.set()
+                release.wait(1)
+            return original_grab(timeout_ms)
+
+        camera.grab_frame_bgr = grab
+        camera.clear_image_buffer = lambda: camera.calls.append('clear') or True
+        worker = StreamWorker(camera)
+        received = []
+        # 模拟 Windows 上两次 monotonic 读取落在同一个 tick。
+        with patch.object(stream_worker_module, 'time', types.SimpleNamespace(monotonic=lambda: 1.0)):
+            thread = threading.Thread(target=worker.run, daemon=True)
+            request = threading.Thread(target=lambda: received.append(worker.fresh_snapshot('new', 1)))
+            thread.start()
+            try:
+                self.assertTrue(started.wait(1))
+                request.start()
+                self.assertTrue(_wait_for(lambda: 'new' in worker._fresh_requests))
+                release.set()
+                request.join(1)
+                self.assertFalse(request.is_alive())
+                self.assertEqual(received[0].metadata, 2)
+                self.assertIn('clear', camera.calls)
+            finally:
+                release.set()
+                worker.stop()
+                thread.join(1)
+                if request.ident is not None:
+                    request.join(1)
+
     def test_fresh_request_does_not_reuse_cached_frame(self):
         camera = _FakeCamera()
         camera.set_latest_frame_strategy = lambda: True

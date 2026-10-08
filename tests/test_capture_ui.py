@@ -206,6 +206,13 @@ class CaptureUiTests(unittest.TestCase):
     def test_thumbnail_labels_fit_small_window_and_collapse(self):
         self.widget.resize(1000, 600)
         self.assertTrue(pump(lambda: self.widget.gallery.height() >= 180))
+        view = self.widget.view
+        self.widget._show_preview_frame(np.zeros((800, 1000, 3), np.uint8))
+        view.fit_to_window()
+        QApplication.processEvents()
+        self.assertTrue(view.parentWidget().rect().contains(view.geometry()))
+        visible = view.mapToScene(view.viewport().rect()).boundingRect()
+        self.assertTrue(visible.contains(view._pixmap_item.boundingRect()))
         g = self.widget.gallery
         g.toggle_collapsed()
         QApplication.processEvents()

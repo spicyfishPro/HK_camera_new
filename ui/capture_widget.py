@@ -138,7 +138,8 @@ class ImageView(QGraphicsView):
         self.setBackgroundBrush(QColor("#000"))
         self.setFrameShape(QFrame.Shape.NoFrame)
 
-        self.setMinimumSize(640, 480)
+        # 底部照片带展开时允许实时画面随剩余空间缩小，避免小屏裁切。
+        self.setMinimumSize(240, 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 

@@ -18,8 +18,8 @@ python -m unittest discover -s tests -v
 应用版本定义在 `core/build_info.py` 的 `APP_VERSION`。发布前应先更新版本号，然后创建与之匹配的标签：
 
 ```powershell
-git tag v2.1.0
-git push origin v2.1.0
+git tag v2.2.0
+git push origin v2.2.0
 ```
 
 `Build and release` 工作流会在 Windows Runner 上重新运行测试，随后使用 `build.spec` 生成 onedir 包，并发布以下 Release 附件：
@@ -71,3 +71,5 @@ python scripts/summarize_capture_performance.py logs/2026-10-08.log
 
 界面回归使用相机替身覆盖 1000×600、1366×768、1600×900 与 125%/150% 的 Qt
 缩放；交付前仍需在目标 Windows 电脑检查显示缩放和真实取流。
+Windows CI 同时上传 `capture-ui-preview` 截图附件，图像为明确标记的测试画面。
+也可以运行 `python scripts/render_capture_ui.py --output <截图目录>` 复现布局检查。
