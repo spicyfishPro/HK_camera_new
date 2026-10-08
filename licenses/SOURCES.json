@@ -1,0 +1,503 @@
+{
+  "verified_date": "2026-10-08",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "source": "https://pypi.org/project/PyQt6/6.11.0/#files",
+      "distribution": "PyQt6",
+      "version": "6.11.0",
+      "source_path": "pyqt6-6.11.0.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/Qt-LGPL-3.0.txt",
+      "sha256": "6c671e2912ec69c0832f32066c0313cee5fdc3bbcbce237822e89f3da58edd4e",
+      "source": "https://pypi.org/project/PyQt6-Qt6/6.11.2/#files",
+      "distribution": "PyQt6-Qt6",
+      "version": "6.11.2",
+      "source_path": "pyqt6_qt6-6.11.2.dist-info/LICENSE"
+    },
+    {
+      "path": "licenses/PyQt6-sip-BSD-2-Clause.txt",
+      "sha256": "3e6f5b427c36f94ecf86bc01698af7030a1ed6eb3748110d5dbb8d142d804611",
+      "source": "https://pypi.org/project/PyQt6-sip/13.13.0/#files",
+      "distribution": "PyQt6-sip",
+      "version": "13.13.0",
+      "source_path": "pyqt6_sip-13.13.0.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/OpenCV-Python-MIT.txt",
+      "sha256": "09d719058e782ac7bc71ba21c944e1136cde2bb957c0e888121f0218d6b5f02c",
+      "source": "https://pypi.org/project/opencv-contrib-python/4.13.0.92/#files",
+      "distribution": "opencv-contrib-python",
+      "version": "4.13.0.92",
+      "source_path": "opencv_contrib_python-4.13.0.92.dist-info/LICENSE.txt"
+    },
+    {
+      "path": "licenses/tifffile-BSD-3-Clause.txt",
+      "sha256": "3cf196b1625812d2d119518294043e71017fe858355a58eb48e1e35b61213ce9",
+      "source": "https://pypi.org/project/tifffile/2026.7.14/#files",
+      "distribution": "tifffile",
+      "version": "2026.7.14",
+      "source_path": "tifffile-2026.7.14.dist-info/licenses/LICENSE"
+    },
+    {
+      "path": "licenses/PyInstaller-COPYING.txt",
+      "sha256": "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+      "source": "https://pypi.org/project/pyinstaller/6.20.0/#files",
+      "distribution": "pyinstaller",
+      "version": "6.20.0",
+      "source_path": "pyinstaller-6.20.0.dist-info/licenses/COPYING.txt"
+    },
+    {
+      "path": "licenses/OpenCV-Apache-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://raw.githubusercontent.com/opencv/opencv_contrib/6484ab27bd332762f36262bf3b3f743720f4ca1b/LICENSE"
+    },
+    {
+      "path": "licenses/Python-3.12.10.txt",
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "source": "https://raw.githubusercontent.com/python/cpython/v3.12.10/LICENSE"
+    },
+    {
+      "path": "licenses/BRISQUE-UT-Austin.txt",
+      "sha256": "62a8f1416f09da25c7d99a21853f65cf0daeda80315546bc836d33bac8e39d7f",
+      "source": "https://raw.githubusercontent.com/opencv/opencv_contrib/6484ab27bd332762f36262bf3b3f743720f4ca1b/modules/quality/src/qualitybrisque.cpp",
+      "extraction": "First block comment; copyright and permission notice preserved in full"
+    },
+    {
+      "path": "licenses/Qt-6.11.2-THIRD-PARTY.txt",
+      "sha256": "f1929448376d4c6ff12b7b0b373534de1827d4dc6d3c20f94579053394f49a75",
+      "source": "https://doc.qt.io/qt-6.11/licenses-used-in-qt.html",
+      "upstream_pages": [
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-tika-mimetypes.html",
+          "module": "qt-core",
+          "name": "Apache Tika MimeType Definitions, version c29724782854bb5a319f4a1940d0828a58ace3f9",
+          "html_sha256": "cc970077733934085d59d9346644b3bccc2792096b109fabded44a5318f5a55a",
+          "license_blocks_sha256": "b8caf689cf818ac6e786465b3ef60d58ce7494d397ea269dcbddbf6a567ee606"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-blake2.html",
+          "module": "qt-core",
+          "name": "BLAKE2 (reference implementation), version ed1974ea83433eba7b2d95c5dcd9ac33cb847913",
+          "html_sha256": "c15c5a2e7a8891002afaddc362e1ceaa8de667a112f33f8101d3dc5c2000512f",
+          "license_blocks_sha256": "4a3fcc4573e2b47ad134476ec88287f40ed733b8e0649b51906b6a65cc83489c"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-zlib.html",
+          "module": "qt-core",
+          "name": "Data Compression Library (zlib), version 1.3.2",
+          "html_sha256": "f09f85986a6e80fc34a0076f5525ea8ead43cfcab497503c80d5d6a5343a001b",
+          "license_blocks_sha256": "470bab3328e8c72f010cc549f126cf26c6f0f4fbbdebff774586dd75e617ff38"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-easing.html",
+          "module": "qt-core",
+          "name": "Easing Equations by Robert Penner",
+          "html_sha256": "81e738ad0c214d81d0ff3dc4b22478f882e64ccbd558c681f816514c6accef95",
+          "license_blocks_sha256": "da129cb5cc977a434727083ae929d0c12455c497c88a6c601c33d13af0373fbc"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-doubleconversion.html",
+          "module": "qt-core",
+          "name": "Efficient Binary-Decimal and Decimal-Binary Conversion Routines for IEEE Doubles, version 3.4.0",
+          "html_sha256": "8f278b0a3d0614bed2eff7f16401ebbe622389ee2a38acc93d717bcd44bade9d",
+          "license_blocks_sha256": "1fcb3fc7dbe8033b16f714ae3350b5ecf3a0bc34f87e774e1ac207fc9319ad56"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-md4.html",
+          "module": "qt-core",
+          "name": "MD4",
+          "html_sha256": "3cd379a71461e002d7c55b682b87f7f29f782455d03fec5a256fa3cf7695f62b",
+          "license_blocks_sha256": "24ebc9ad180a918d38528660f86f347d14e605ca5ed491129119f8ecee40648e"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-md5.html",
+          "module": "qt-core",
+          "name": "MD5",
+          "html_sha256": "5bdfc509285f1fda24a20ae5eb51e0318dcf0b1d5450f3c72962178fec88fb55",
+          "license_blocks_sha256": "c9938433aaf062a826d1d8edcbde595616be13abc59ff1f49704f45655677111"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-pcre2-sljit.html",
+          "module": "qt-core",
+          "name": "PCRE2 - Stack-less Just-In-Time Compiler, version 10.47",
+          "html_sha256": "e3366f79c9623202a311ec2a6a535f3b1be57415dfbe3a5622945a6e30d6df4a",
+          "license_blocks_sha256": "c8956df59f148dc8275e7e15a6172a310ee8914cfc837345d5f9bdacaa1ffc18"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-pcre2.html",
+          "module": "qt-core",
+          "name": "PCRE2, version 10.47",
+          "html_sha256": "879709e8fbdb8ab9491613b941eb5be2398f1215a4b1fdd21d3f0092dda9da53",
+          "license_blocks_sha256": "2e8aa926ea8f014d31e1e28c4c7f385c45fb1b06666619df83e7d8e3f13bca08"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-qeventdispatcher-cf.html",
+          "module": "qt-core",
+          "name": "QEventDispatcher on macOS",
+          "html_sha256": "9005ab8a6e81f57586b5e8c681d1f0ae18536056e4aaa142e90d99aa2fe6718a",
+          "license_blocks_sha256": "a2de8666aa545f9f996b78b8886a23de7751ee5e107c58fa0083da4961f6e1e5"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-sha1.html",
+          "module": "qt-core",
+          "name": "Secure Hash Algorithm SHA-1",
+          "html_sha256": "c3452a11083c2cab9816f9e89b80abebacd2f65118bde19a6215dbd741335152",
+          "license_blocks_sha256": "77659de8893b882603e995afa675c01d9ac1db00fdb844a78961eb6682794799"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-sha3-keccak.html",
+          "module": "qt-core",
+          "name": "Secure Hash Algorithm SHA-3 - Keccak, version 3.2",
+          "html_sha256": "e075c7dd7e3d4628b6da67afaea3a03861df87783bd3ea339aab2e6a441b2278",
+          "license_blocks_sha256": "7368e9fc4c3edc13cb4cbe7cb504f72f01e45a4f012e3b9839e3bb9d87bde6a7"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-sha3-endian.html",
+          "module": "qt-core",
+          "name": "Secure Hash Algorithm SHA-3 - brg_endian, version 1.0.0",
+          "html_sha256": "9cdc8643aedd71c2c7ecc14cec0efbae9dedd340f9671565e8df90fef1e1ea67",
+          "license_blocks_sha256": "de9f3ff9b997808ac429e88b2a52a112353846f8491f4cb834bb098025bcb8a8"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-rfc6234.html",
+          "module": "qt-core",
+          "name": "Secure Hash Algorithms SHA-384 and SHA-512",
+          "html_sha256": "70173325c5ac8e4a00601392b9f5ac5f568dbc226b99d3f6f4eb1be2eb17b134",
+          "license_blocks_sha256": "be7902d78cb7bc3b5b84059bc537f60685050b5c39cbe63d5b321200fc2727ab"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-siphash.html",
+          "module": "qt-core",
+          "name": "SipHash Algorithm",
+          "html_sha256": "0f84aa28d13902be42d0afddc385456d47c81b75a3c3db530734170afe91991f",
+          "license_blocks_sha256": "9ab4dfb5078ba13339eb416362ee0e056394eaef3b244286900b71e5b1720f04"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-tinycbor.html",
+          "module": "qt-core",
+          "name": "TinyCBOR, version 7.0",
+          "html_sha256": "76e9342674266d8cadc12b3a27831a929c0748f9fb627016896329353c9755d3",
+          "license_blocks_sha256": "f3303d4c3deab4932b9d94b7ed46b67a177a3399ef84648bb08ad660c2ec6fe9"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-unicode-character-database.html",
+          "module": "qt-core",
+          "name": "Unicode Character Database (UCD), version 36",
+          "html_sha256": "440a13bb53a807615d74ee710da9092f96518345a42df60ed1627dabe79a0e00",
+          "license_blocks_sha256": "166fd74d8df5aace5af893e44fe895228396734ec580a3760427f528e4c71818"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-unicode-cldr.html",
+          "module": "qt-core",
+          "name": "Unicode Common Locale Data Repository (CLDR), version v48.2",
+          "html_sha256": "add84040ba01a848e4947edd9e1cb13992804467c1b7855edb651f538a608398",
+          "license_blocks_sha256": "6c7b63d4109aacf3af52395adb4c8e0448f2f9a1a378c4cb1b11be84613136d5"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-forkfd.html",
+          "module": "qt-core",
+          "name": "forkfd",
+          "html_sha256": "7cfcad8798f106495c8382a4359bc9a25f59dec2968aadb30d864cf98577bc6f",
+          "license_blocks_sha256": "6ded970b40633d134ff4150aeecca852f2c9dfc7b5aa0ed0ecb9fd6bd8a8bbdd"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtcore-attribution-tlexpected.html",
+          "module": "qt-core",
+          "name": "tl::expected, version 41d3e1f48d682992a2230b2a715bca38b848b269",
+          "html_sha256": "5b10ad331f87c2c90c71fb27cc6830b8655106e3f75c8e07ea83a4229415e408",
+          "license_blocks_sha256": "04d83572f522b011984ddfd6092812131802251d8a057cac31f5c6a13f987c84"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-aglfn.html",
+          "module": "qt-gui",
+          "name": "Adobe Glyph List For New Fonts, version 1.7",
+          "html_sha256": "090a805cd5108a3bb90785b9b7f794c4b18d7ca10c200def97dc475b1e77b7a6",
+          "license_blocks_sha256": "d4d3fd1e37ed12fffa510c8032ffa2512790db0ce23f414cc00544806f070943"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-grayraster.html",
+          "module": "qt-gui",
+          "name": "Anti-aliasing rasterizer from FreeType 2",
+          "html_sha256": "fa24f4b9586cbdd6889bb09e9a3145915d74b187fc4af5213b3b520d4c7f5588",
+          "license_blocks_sha256": "f99ac1af04956cf3f46af419e4f1373d5591508992a09399595a88f22bcd47d3"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-cocoa-platform-plugin.html",
+          "module": "qt-gui",
+          "name": "Cocoa Platform Plugin",
+          "html_sha256": "43cf11cd33ef99aeefb093e2e79f354bc82a1cc7b3506b359abd3a9204dcf91d",
+          "license_blocks_sha256": "a2de8666aa545f9f996b78b8886a23de7751ee5e107c58fa0083da4961f6e1e5"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-d3d12memoryallocator.html",
+          "module": "qt-gui",
+          "name": "D3D12 Memory Allocator, version f128d39b7a95b4235bd228d231646278dc6c24b2",
+          "html_sha256": "b745228f1c57810541575d17af228a460cf74fc13d77e25c8db9f3bad24f0da6",
+          "license_blocks_sha256": "5b74fc238db027411c001e53734ee03c5ffc07ea596e1112eb647b8fe9704a10"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-dejayvu.html",
+          "module": "qt-gui",
+          "name": "DejaVu Fonts, version 2.37",
+          "html_sha256": "a73b547586542bf7fa2248e3996b05c2598f659f9cded30e4acadb5273a5cc73",
+          "license_blocks_sha256": "536aa4d7af9719871610f12bac9a7174b0fc0f4cd4141509114e965d84aef54a"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-emoji-segmenter.html",
+          "module": "qt-gui",
+          "name": "Emoji Segmenter, version 0.4.0",
+          "html_sha256": "88d9ad1dafa942572491dc6b10bf2b03d51b821d6e4ad11974dcc95394cabadc",
+          "license_blocks_sha256": "5b4116aaff1b63945b5befc9d2d417109f792c88e46efecba0ed18c88eafb20e"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-freetype-bdf.html",
+          "module": "qt-gui",
+          "name": "Freetype 2 - Bitmap Distribution Format (BDF) support",
+          "html_sha256": "d208dd87b5b57587722abfabb045b18c871f671b966daabc449a038e7529a5ac",
+          "license_blocks_sha256": "0011d635b6aae8a0f59dba137b3e103649e550241776c7f9e4cfc8ab424eda7b"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-freetype-pcf.html",
+          "module": "qt-gui",
+          "name": "Freetype 2 - Portable Compiled Format (PCF) support",
+          "html_sha256": "0ba332fc4446962c247393201f0f1ec8ca5bcaf5adf3bf599ddb0b14f57531aa",
+          "license_blocks_sha256": "7698bf861c2e68117377fe90f121c4c0cd45a937904d32e3bc78e265082e60dc"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-freetype-zlib.html",
+          "module": "qt-gui",
+          "name": "Freetype 2 - zlib",
+          "html_sha256": "3d762e1143a721f65b207a1d5e4970cd145a2dbeffa1c0064759a96040dec900",
+          "license_blocks_sha256": "a9901054cc2979980212e4b763ca500e5931815000799ca9d8278195d2f9171d"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-freetype.html",
+          "module": "qt-gui",
+          "name": "Freetype 2, version 2.14.3",
+          "html_sha256": "47d0068bf7ccc0044fa0af6dfa9718b2b494f4467604fa1202b8106a5febd8d0",
+          "license_blocks_sha256": "a1123836b56b8ea0717b70cdcfcbd8e483329c35c0ef062ed811304c978e2ea7"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-harfbuzz-ng.html",
+          "module": "qt-gui",
+          "name": "HarfBuzz-NG, version 14.3.0",
+          "html_sha256": "60c0117b6fb0bf0a50eed4b71ebc1f57629bf636ae9babd841c31be6df01c553",
+          "license_blocks_sha256": "be8872cba30d1b330b901ef60dd7b0b85144d9183ebf8596b2a061ec7f4a2c75"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-libjpeg.html",
+          "module": "qt-gui",
+          "name": "LibJPEG-turbo, version 3.2.0",
+          "html_sha256": "78e44d48db72f43bf844539d9be8f6993aea770bf2bb256463f7b90b736c1668",
+          "license_blocks_sha256": "0e4189949f9c9d7102dccf5e79cf9b4c2f4067c29e465969d4eea1500e10754f"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-libpng.html",
+          "module": "qt-gui",
+          "name": "LibPNG, version 1.6.58",
+          "html_sha256": "08480b3d18f2ad46aa26ef2a5876b43a3242dcbeadb51ba39b9de690ce13a0d1",
+          "license_blocks_sha256": "66a3cf8cb0c65f4aebf72b44e45e7179d29e617ddc9881db178efcb89b1f7c46"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-md4c.html",
+          "module": "qt-gui",
+          "name": "MD4C, version 0.5.3",
+          "html_sha256": "35b39b528b4c6597faad0c68c60a8c11c25404fa4659d3e5f22b5c92179c490e",
+          "license_blocks_sha256": "f42ee1504d9cd7d963a264a8453d4d49050dab815011b15da48052564c586c1d"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-rhi-miniengine-d3d12-mipmap.html",
+          "module": "qt-gui",
+          "name": "Mipmap generator for D3D12, version 0aa79bad78992da0b6a8279ddb9002c1753cb849",
+          "html_sha256": "858ae14cc9f8d1056ccf459c860c8f3e384c1f38d92a6cf04fe8473e7a2285e2",
+          "license_blocks_sha256": "5a62b1aaae60a85113ce225e7486b89ff8e732bb961c3ea93ba97797f1e06e88"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-android-native-style.html",
+          "module": "qt-gui",
+          "name": "Native Style for Android",
+          "html_sha256": "7b0354a08ad300587ee7638fa0254ff0445c79539e44ece1e17ef0dea9c01911",
+          "license_blocks_sha256": "e3328112772cbce031719b89cd6f4ee10df2eaa70f0393d0eb739bb288b93326"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-opengl-es2-headers.html",
+          "module": "qt-gui",
+          "name": "OpenGL ES 2 Headers, version Revision 27673",
+          "html_sha256": "0b6d7f5b9e11e3ef063cc7874279b333638163c01c6f40cd5c98eddce1178013",
+          "license_blocks_sha256": "d36ff5a6138dbc6205e5e1e4debf9890af699e695a02d95758d15df801ae952b"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-opengl-headers.html",
+          "module": "qt-gui",
+          "name": "OpenGL Headers, version Revision 27684",
+          "html_sha256": "6b97a63879947ec9185756a30f54df9a8886bf86a46b10ccbe291cb99d8925bc",
+          "license_blocks_sha256": "d36ff5a6138dbc6205e5e1e4debf9890af699e695a02d95758d15df801ae952b"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-pixman.html",
+          "module": "qt-gui",
+          "name": "Pixman, version 0.17.12",
+          "html_sha256": "f366f5361aabd425bb79add07d10feb16495a7511ae3b4c1751d24d23dfd93c0",
+          "license_blocks_sha256": "89eb6a48211d5ea48135cc9efdaa5a1c1849b8d70913151d67f3ccb0260ba1ad"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-smooth-scaling-algorithm.html",
+          "module": "qt-gui",
+          "name": "Smooth Scaling Algorithm",
+          "html_sha256": "0a4f3a5564f163fffa407f1ffaee8398e466d68c21b0e3f55f6dcdd493b08d0e",
+          "license_blocks_sha256": "61f83bcd46c87b39120d7a11cd005c13ceabf9ada39f898a5e2940520c744700"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-vulkan-xml-spec.html",
+          "module": "qt-gui",
+          "name": "Vulkan API Registry, version 1.4.308",
+          "html_sha256": "1567670618ee88ee6653a1c1ebe7ad136fe6ee99542faae84022d762f34854da",
+          "license_blocks_sha256": "deb9095a78efffa69d8e6d478307735fcfc8ad229fa8691730ae602cbd57443c"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-vulkanmemoryallocator.html",
+          "module": "qt-gui",
+          "name": "Vulkan Memory Allocator, version 3.2.1",
+          "html_sha256": "ad5859b86279648b79efe3cecab89bcc528a2950800c39d33f52f3a3cd0fef71",
+          "license_blocks_sha256": "3b41d2efd126cfbcffc5909d1052deb3a772a68255ed63fd812d92df1761401a"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-webgradients.html",
+          "module": "qt-gui",
+          "name": "WebGradients",
+          "html_sha256": "bef54bcbb1418256cc7a85f3f1a14126c65c8c00a4f6ae8eed7c7b296ee74155",
+          "license_blocks_sha256": "5408f559648ad0015d3af3bd6b32fec0b8ab67f0bc6d79f634e21c6b09ca455a"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-wintab.html",
+          "module": "qt-gui",
+          "name": "Wintab API",
+          "html_sha256": "f5c13a0fa2a4eaa15993c9f15c3c05623b60dddd7bfac67239b408697270d22a",
+          "license_blocks_sha256": "0972baad59d93cd5dfb25a9efa58c4fa8727bea31b59daeb739d44736ec2a606"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-xserverhelper.html",
+          "module": "qt-gui",
+          "name": "X Server helper",
+          "html_sha256": "7197851c5e017b574f0168a55532ed7b1a1d3743a52209d4e0948dc5f8ddc8c9",
+          "license_blocks_sha256": "6a6c07d72b7450e137f3a4a65a66fbe1d5f082a4da10d0576b9293684e43d92d"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-xcb-xinput.html",
+          "module": "qt-gui",
+          "name": "XCB-XInput",
+          "html_sha256": "b266935f105c1a16c12205175b9be6dc1fcf5d06768618523ad191028c64ab4d",
+          "license_blocks_sha256": "ac52cc0220307a892b204138e0f045bd3b7dd2200b32bd66613f017b46757516"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtgui-attribution-icc-srgb-color-profile.html",
+          "module": "qt-gui",
+          "name": "sRGB color profile icc file",
+          "html_sha256": "3bf1d82ce29906d0a971f4dae45ae8b8bb2534ca948032e28f5858b3a785b6f4",
+          "license_blocks_sha256": "133535b1b6fd240b6cbb0a32e8f99dcc653940e798838127c3a2d832949bdc02"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtimageformats-attribution-libtiff.html",
+          "module": "qt-image-formats",
+          "name": "TIFF Software Distribution (libtiff), version 4.7.2",
+          "html_sha256": "99ee35115095573cf36147abbb1b968beb70aaf4ce684cb02fcaff5c2691e9a3",
+          "license_blocks_sha256": "435be58c8d38d359c124c6a842e00b8bd20c93f2d1e56a37b9c42570e99b5dcc"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtimageformats-attribution-libwebp.html",
+          "module": "qt-image-formats",
+          "name": "WebP (libwebp), version 1.6.0",
+          "html_sha256": "1bbbe45609769041aab96b98538077c53d93ddbc113e0ca544b7bb1b1e036a25",
+          "license_blocks_sha256": "b187aa9115b6beeaa7bd71750a4bbca6f5379bda0b026cfad4ffe09b054649e0"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtnetwork-attribution-psl-data.html",
+          "module": "qt-network",
+          "name": "The Public Suffix List, version 2026-05-14_08-35-31_UTC",
+          "html_sha256": "83b681de0f730eeb762abf146189e80f61dbed3b1c70b2897bb4fc036d673af9",
+          "license_blocks_sha256": "c9c5cf97be6398e60449fb2f0d3434cb4d618fb6ff92fe234e2d0053122c2e58"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtnetwork-attribution-libpsl.html",
+          "module": "qt-network",
+          "name": "libpsl - C library to handle the Public Suffix List, version 664f3dc85259ec65e30248a61fa1c45b7b0e4c3f",
+          "html_sha256": "7fad81d9a5f2dd2f04f4e323f2a89d5d292dd100f53a44c2fb3f211dbc9d609b",
+          "license_blocks_sha256": "da2329945fec365bf50173797113e41894951d25e0eccc565a70d9c24f013469"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-abseil.html",
+          "module": "qt-pdf",
+          "name": "Abseil",
+          "html_sha256": "9a83efa7502c32f27d4298d0b0c25d25ed5345c1c1345c2cf6ce7798b5aec93a",
+          "license_blocks_sha256": "b1b28115879a4e0847c2d7e2d45ae5f7e376889cc5cb9700bf3cc70f3f7d51e9"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-freetype.html",
+          "module": "qt-pdf",
+          "name": "FreeType",
+          "html_sha256": "b7ab4211678a46c56a93c07c153ce7537d96d3ced66e747685f98efddcddcd8e",
+          "license_blocks_sha256": "eb9284d195a185e42cb097268da35bf8b7382c2f95d55ed40bb0144eab657d3d"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-pdfium.html",
+          "module": "qt-pdf",
+          "name": "PDFium",
+          "html_sha256": "adf2dd0fa77c85423d7f3e2fe47069177a923ffbf8120c50ac571835cc1f3bc4",
+          "license_blocks_sha256": "f621f13b279ebaadd512255299e7870cfd0e045a6b33bc9ed048808bd07569d8"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-the-chromium-project.html",
+          "module": "qt-pdf",
+          "name": "The Chromium Project",
+          "html_sha256": "d89213f07fca2ac57be697dfc74b40a700609e20f6d7d9f9d164a01270fe2d0d",
+          "license_blocks_sha256": "b411849cb01f3f8e0e42e7890748dd0d86fb6623925dcf90e6180d2f5dcc9899"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-fast-float.html",
+          "module": "qt-pdf",
+          "name": "fast_float",
+          "html_sha256": "e6fd7aeed86828bacd9719862879feac88a3fbaa23d9aa38224006b982e06bcd",
+          "license_blocks_sha256": "645a838676c816db965c7ed95ed224f70e02eef4c40b7a130f94b6ff394c25eb"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-icu.html",
+          "module": "qt-pdf",
+          "name": "icu",
+          "html_sha256": "8854c69a0b657e2eae6fb659e8ee7c65dbac6982c7360c0ad1420e8c54c6131e",
+          "license_blocks_sha256": "3b89f0df51fbdbb22323c01ef8110e6eb79dbfa85bf09a01f6bd1497c4ba39b5"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-libjpeg-turbo.html",
+          "module": "qt-pdf",
+          "name": "libjpeg-turbo",
+          "html_sha256": "ab1e9ce5412c2bd6743f387339fb56a0230a3aa9e2e3efe022c389eae25edddb",
+          "license_blocks_sha256": "d730bf4da064350594535748261640abb32939abd7274e8afe1950cda5e03b0a"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-libpng.html",
+          "module": "qt-pdf",
+          "name": "libpng",
+          "html_sha256": "0a20f5a96fca74ec9676993231a0c042a428d603d3dd7202ca7dd229b643e97c",
+          "license_blocks_sha256": "a6ab1f3834ebd8c23dc31454d442742f03714fa72e1c8d4773e0c646e54d8547"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtpdf-3rdparty-zlib.html",
+          "module": "qt-pdf",
+          "name": "zlib",
+          "html_sha256": "860ecdc367f740de53472ca70dde60eaed126b736ba828131afbbc87c5c42dea",
+          "license_blocks_sha256": "eb05bfe85dc7c1d3ef7a154855d0e487e2ea82ceaed26f5b8c74bb32c674a4d1"
+        },
+        {
+          "url": "https://doc.qt.io/qt-6.11/qtsvg-attribution-xsvg.html",
+          "module": "qt-svg",
+          "name": "XSVG",
+          "html_sha256": "237388ef1841f4b164ab9dbdf454f4b5ae65662071913bf4418afdb44710ea14",
+          "license_blocks_sha256": "61e134ae14b15b825b3e79f14572df6b1a80e5b08cf779ea55e14f279523c197"
+        }
+      ]
+    }
+  ]
+}

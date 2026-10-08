@@ -1,0 +1,5 @@
+# Preserve upstream license bytes and their recorded SHA-256 on Windows checkout.
+LICENSE -text
+# Upstream notices may contain trailing spaces; keep their original bytes.
+licenses/*.txt -text -whitespace
+licenses/SOURCES.json text eol=lf

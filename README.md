@@ -2,6 +2,14 @@
 
 面向海康工业相机的 Windows 图像采集软件。应用使用 Python 3.12、PyQt6、OpenCV 和 PyInstaller，正式运行时需要安装海康 MVS Runtime。
 
+## 许可证与公开分发状态
+
+本项目原创代码采用 [GPL-3.0-only](LICENSE)。海康绑定、BRISQUE 模型和依赖保留各自
+授权，完整来源、许可及二进制交付说明见 [第三方声明](THIRD_PARTY_NOTICES.md)。
+**当前完整仓库及安装包尚不能据此直接公开分发**：已核实的海康协议限制 SDK 再分发，
+尚未取得 Python 绑定公开分发的书面许可；PyQt GPL 与专有 SDK 的组合授权也需解决。
+详见 [海康 SDK 授权核验](docs/licensing/HIKROBOT.md)。
+
 ## 自动测试
 
 每次推送和 Pull Request 都会在 GitHub Actions 的 Windows Runner 上执行：
@@ -14,6 +22,8 @@ python -m unittest discover -s tests -v
 这些测试覆盖纯逻辑和无相机 UI 行为，不代替真实 Windows 设备、MVS DLL、相机取流及保存性能验收。
 
 ## 构建与发布
+
+以下说明现有技术流程；对外发布前需先满足上述第三方授权与对应源码提供条件。
 
 应用版本定义在 `core/build_info.py` 的 `APP_VERSION`。发布前应先更新版本号，然后创建与之匹配的标签：
 
@@ -30,6 +40,9 @@ git push origin v2.2.0
 也可以在 Actions 页面手动运行该工作流进行构建。手动运行只上传短期 Artifact，不创建 Release；只有版本标签会发布 Release。
 
 解压 ZIP 后运行 `RGB_Capture.exe`。目标电脑必须预先安装与相机兼容的海康 MVS Runtime，确保可以找到 `MvCameraControl.dll`。
+
+安装包的 `_internal/licenses/` 包含许可原文和实际依赖版本清单，
+`_internal/THIRD_PARTY_NOTICES.md` 包含来源及适用范围。必要许可缺失时构建会失败。
 
 ## 连续快拍与照片预览（2.2）
 

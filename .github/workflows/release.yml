@@ -70,11 +70,17 @@ jobs:
           $buildInfo = "dist/RGB_Capture/_internal/build_info.json"
           $model = "dist/RGB_Capture/_internal/models/brisque_model_live.yml"
           $mvImport = "dist/RGB_Capture/_internal/MvImport/MvCameraControl_class.py"
-          foreach ($required in @($exe, $buildInfo, $model, $mvImport)) {
+          $license = "dist/RGB_Capture/_internal/LICENSE"
+          $notices = "dist/RGB_Capture/_internal/THIRD_PARTY_NOTICES.md"
+          $licenseManifest = "dist/RGB_Capture/_internal/licenses/installed/manifest.json"
+          $sdkNotice = "dist/RGB_Capture/_internal/docs/licensing/HIKROBOT.md"
+          foreach ($required in @($exe, $buildInfo, $model, $mvImport, $license, $notices, $licenseManifest, $sdkNotice)) {
             if (-not (Test-Path $required -PathType Leaf)) {
               throw "Required build output is missing: $required"
             }
           }
+          python scripts/verify_license_bundle.py dist/RGB_Capture/_internal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $version = (python -c "from core.build_info import APP_VERSION; print(APP_VERSION)").Trim()
           $archiveName = "RGB_Capture-v$version-windows-x86_64.zip"

@@ -1,5 +1,8 @@
 # 运行依赖(同 hk_camera 环境实际版本)
 PyQt6==6.11.0
+# 与已核验的 Qt 第三方声明保持一致；升级时同步更新 licenses/。
+PyQt6-Qt6==6.11.2
+PyQt6-sip==13.13.0
 # BRISQUE 需要 contrib 的 cv2.quality；不要同时安装 opencv-python。
 opencv-contrib-python==4.13.0.92
 numpy==2.4.4

@@ -15,6 +15,7 @@
 """
 import json
 import re
+import runpy
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,11 @@ build_info_file.write_text(json.dumps({
     'git_commit': git_commit,
 }, ensure_ascii=False, indent=2), encoding='utf-8')
 
+license_collector = runpy.run_path(str(project_root / 'scripts' / 'collect_third_party_licenses.py'))
+_, license_datas = license_collector['collect_licenses'](
+    generated_dir / 'third_party_licenses', project_root=project_root,
+)
+
 a = Analysis(
     ['main.py'],
     pathex=[
@@ -59,7 +65,11 @@ a = Analysis(
         ('models', 'models'),
         # 构建版本快照
         (str(build_info_file), '.'),
-    ],
+        ('LICENSE', '.'),
+        ('THIRD_PARTY_NOTICES.md', '.'),
+        ('licenses', 'licenses'),
+        ('docs/licensing', 'docs/licensing'),
+    ] + license_datas,
     hiddenimports=[
         # 海康 SDK 内部模块,PyInstaller 静态扫描扫不到
         'MvCameraControl_class',
