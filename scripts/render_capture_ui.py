@@ -14,7 +14,11 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Windows 的 offscreen 插件不加载原生字体数据库，不能用于文字布局验收。
+if sys.platform == "win32":
+    os.environ["QT_QPA_PLATFORM"] = "windows"
+else:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
