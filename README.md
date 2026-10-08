@@ -28,8 +28,8 @@ python -m unittest discover -s tests -v
 应用版本定义在 `core/build_info.py` 的 `APP_VERSION`。发布前应先更新版本号，然后创建与之匹配的标签：
 
 ```powershell
-git tag v2.2.1
-git push origin v2.2.1
+git tag v2.3
+git push origin v2.3
 ```
 
 `Build and release` 工作流会在 Windows Runner 上重新运行测试，随后使用 `build.spec` 生成 onedir 包，并发布以下 Release 附件：
@@ -46,7 +46,7 @@ git push origin v2.2.1
 
 ## 连续快拍与照片预览（2.2）
 
-### 启动自动连接（2.2.1）
+### 启动自动连接（2.3）
 
 主窗口首次显示 1 秒后，在当前采集页刷新设备：仅有一台时自动连接，连接及参数
 初始化完成后等待 0.1 秒进入连续采集。没有设备或暂时连接失败时，每 5 秒重试，
