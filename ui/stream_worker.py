@@ -57,6 +57,38 @@ class StreamWorker(QThread):
         self._display_slot_available.set()
         self._last_emit_ts: float = 0.0
         self._emit_interval: float = 1.0 / _DISPLAY_MAX_FPS
+        self._saving = False
+        self._fresh_requests: dict[str, tuple[float, FrameSnapshot | None]] = {}
+        self._fresh_errors: dict[str, str] = {}
+        self._latest_strategy = False
+
+    def set_saving(self, saving: bool) -> None:
+        with self._state:
+            self._saving = saving
+            self._state.notify_all()
+
+    def fresh_snapshot(self, request_id: str, timeout_s: float = 1.0) -> FrameSnapshot:
+        """由预处理线程调用；只接受请求之后开始读取的帧。"""
+        with self._state:
+            if self._stop:
+                raise RuntimeError("取流已停止")
+            self._fresh_requests[request_id] = (time.monotonic(), None)
+            self._state.notify_all()
+            try:
+                arrived = self._state.wait_for(
+                    lambda: self._stop or request_id in self._fresh_errors
+                    or self._fresh_requests[request_id][1] is not None,
+                    timeout=timeout_s,
+                )
+                snapshot = self._fresh_requests[request_id][1]
+                if request_id in self._fresh_errors:
+                    raise RuntimeError(self._fresh_errors[request_id])
+                if not arrived or snapshot is None:
+                    raise RuntimeError("等待新的相机帧超时，请重新抓拍")
+                return snapshot
+            finally:
+                self._fresh_requests.pop(request_id, None)
+                self._fresh_errors.pop(request_id, None)
 
     def stop(self) -> None:
         with self._state:
@@ -125,6 +157,8 @@ class StreamWorker(QThread):
         consecutive_fail = 0
         grabbing = False
         try:
+            configure = getattr(self._cam, "set_latest_frame_strategy", None)
+            self._latest_strategy = bool(configure and configure())
             self._cam.start_grabbing()
             grabbing = True
         except Exception as e:
@@ -134,6 +168,8 @@ class StreamWorker(QThread):
                 self._state.notify_all()
             return
 
+        last_read = 0.0
+        last_cleared = 0.0
         while True:
             with self._state:
                 stop_requested = self._stop
@@ -171,7 +207,32 @@ class StreamWorker(QThread):
                 self._last_emit_ts = 0.0
                 continue
 
+            with self._state:
+                if self._saving and self._latest_strategy:
+                    delay = max(0.0, 1.0 / 15 - (time.monotonic() - last_read))
+                    self._state.wait_for(
+                        lambda: self._stop or self._pause_requested or not self._saving
+                        or any(s is None for _, s in self._fresh_requests.values()),
+                        timeout=delay,
+                    )
+                if self._stop or self._pause_requested:
+                    continue
+            read_started = time.monotonic()
+            last_read = read_started
             try:
+                with self._state:
+                    to_clear = [key for key, (requested, arrived) in self._fresh_requests.items()
+                                if arrived is None and requested > last_cleared]
+                if to_clear:
+                    clear = getattr(self._cam, "clear_image_buffer", None)
+                    # 相机替身可省略；正式 SDK wrapper 始终提供此方法。
+                    if clear is not None and not clear():
+                        with self._state:
+                            for key in to_clear:
+                                if key in self._fresh_requests:
+                                    self._fresh_errors[key] = "无法清理相机旧帧缓存，请重新连接后抓拍"
+                            self._state.notify_all()
+                    last_cleared = read_started
                 result = self._cam.grab_frame_bgr(timeout_ms=500)
             except Exception as e:
                 self.error.emit(f"取流异常: {e}")
@@ -196,6 +257,12 @@ class StreamWorker(QThread):
                         bgr=bgr,
                         metadata=frame_metadata,
                     )
+                    snapshot = self._latest_frame
+                with self._state:
+                    for request_id, (requested_at, arrived) in list(self._fresh_requests.items()):
+                        if arrived is None and read_started >= requested_at and request_id not in self._fresh_errors:
+                            self._fresh_requests[request_id] = (requested_at, snapshot)
+                    self._state.notify_all()
                 # 限频 + 降采样 + 校正后再 emit
                 now = time.monotonic()
                 due = now - self._last_emit_ts >= self._emit_interval

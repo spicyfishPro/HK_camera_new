@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
+from uuid import uuid4
 
 
 class StepStatus(Enum):
@@ -22,6 +23,8 @@ class StepStatus(Enum):
     PASSED = "passed"     # 绿:实拍合格
     SKIPPED = "skipped"   # 绿:起点之前手动跳过(未拍)
     FAILED = "failed"     # 红:实拍不合格,需覆盖式重拍
+    SAVING = "saving"
+    SAVE_FAILED = "save_failed"
 
 
 # 默认相位(麦穗:正/反两张)。籽粒用 ("",) 表示"每个重复一张、无正反"。
@@ -34,6 +37,10 @@ class Step:
     side: str                      # "front" / "side";籽粒为 ""
     status: StepStatus = StepStatus.PENDING
     score: Optional[float] = None  # 实拍后的 BRISQUE,SKIPPED/PENDING 时为 None
+    capture_id: str | None = None
+    quality_passed: bool | None = None
+    saved: bool = False
+    overwrite_allowed: bool = False
 
     @property
     def label(self) -> str:
@@ -69,6 +76,7 @@ class SpikeWorkflow:
         self._cur: int = -1   # 当前 step 在 _steps 中的索引;-1 表示未启动
         self._start_idx: int = 0  # 用户选定的起点索引;is_complete 只看起点及之后
         self._active: bool = False
+        self.session_id = uuid4().hex
 
     # ---------- 配置 / 启动 ----------
 
@@ -89,6 +97,7 @@ class SpikeWorkflow:
         idx = _step_index(start_rep, start_side, total, sides)
 
         self._prefix = prefix
+        self.session_id = uuid4().hex
         self._total = total
         self._sides = tuple(sides)
         # 构造 len(sides)*N 个 step,默认 PENDING;
@@ -177,6 +186,42 @@ class SpikeWorkflow:
 
     # ---------- 推进 ----------
 
+    def bind_capture(self, capture_id: str) -> None:
+        step = self.current_step()
+        if step is None:
+            raise RuntimeError("当前没有待拍位置")
+        step.capture_id = capture_id
+        step.quality_passed = None
+        step.saved = False
+
+    def apply_capture_result(self, session: str, capture_id: str, *,
+                             passed: bool | None = None, score: float | None = None,
+                             saved: bool = False, save_failed: bool = False) -> bool:
+        if session != self.session_id or not self.active:
+            return False
+        step = next((s for s in self._steps if s.capture_id == capture_id), None)
+        if step is None:
+            return False  # 重拍旧任务不能更新新任务状态。
+        if passed is not None:
+            first_quality = step.quality_passed is None
+            step.quality_passed = passed
+            step.score = score
+            step.status = StepStatus.SAVING if passed else StepStatus.FAILED
+            if passed and first_quality and self._steps[self._cur] is step:
+                nxt = self._cur + 1
+                while nxt < len(self._steps) and self._steps[nxt].status in (
+                        StepStatus.SKIPPED, StepStatus.PASSED, StepStatus.SAVING):
+                    nxt += 1
+                if nxt < len(self._steps):
+                    self._cur = nxt
+                    self._steps[nxt].status = StepStatus.CURRENT
+        if saved:
+            step.saved = True
+            step.status = StepStatus.PASSED if step.quality_passed else StepStatus.FAILED
+        if save_failed:
+            step.status = StepStatus.SAVE_FAILED
+        return True
+
     def on_pass(self, score: float) -> bool:
         """当前格变 PASSED,推进到下一格。
         返回:还有下一格 = True;已是最后一格(整体完成) = False。"""
@@ -218,6 +263,7 @@ class SpikeWorkflow:
             cur.status = StepStatus.PENDING
         self._steps[idx].status = StepStatus.CURRENT
         self._steps[idx].score = None
+        self._steps[idx].overwrite_allowed = True
         self._cur = idx
 
     def reevaluate_disk(self, checker: Callable[[int, str], bool]) -> None:
@@ -229,7 +275,8 @@ class SpikeWorkflow:
         if not self._active:
             return
         for s in self._steps:
-            if s.status in (StepStatus.PASSED, StepStatus.FAILED, StepStatus.CURRENT):
+            if s.status in (StepStatus.PASSED, StepStatus.FAILED, StepStatus.CURRENT,
+                            StepStatus.SAVING, StepStatus.SAVE_FAILED):
                 continue
             s.status = StepStatus.SKIPPED if checker(s.rep, s.side) else StepStatus.PENDING
 

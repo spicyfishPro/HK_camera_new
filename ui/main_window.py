@@ -4,14 +4,17 @@ from __future__ import annotations
 import logging
 
 from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtWidgets import QMainWindow, QTabWidget, QLabel, QStatusBar
 
 from .capture_widget import CaptureWidget
+from core.capture_pipeline import CapturePipeline
 
 log = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
+    capture_event = pyqtSignal(object)
     def __init__(self):
         super().__init__()
         self.setWindowTitle("RGB Capture")
@@ -21,8 +24,14 @@ class MainWindow(QMainWindow):
         self._fit_to_screen()
 
         self.tabs = QTabWidget()
-        self.wheat_tab = CaptureWidget(mode="wheat")
-        self.grain_tab = CaptureWidget(mode="grain")
+        self.pipeline = CapturePipeline(self.capture_event.emit)
+        self.wheat_tab = CaptureWidget(mode="wheat", pipeline=self.pipeline)
+        self.grain_tab = CaptureWidget(mode="grain", pipeline=self.pipeline)
+        self.capture_event.connect(self.wheat_tab._on_pipeline_event)
+        self.capture_event.connect(self.grain_tab._on_pipeline_event)
+        self._close_timer = QTimer(self)
+        self._close_timer.setInterval(200)
+        self._close_timer.timeout.connect(self._continue_close)
         self.wheat_tab.bearer_key_changed.connect(
             self.grain_tab.set_bearer_key
         )
@@ -61,9 +70,28 @@ class MainWindow(QMainWindow):
         self._right_status.setText(msg)
 
     def closeEvent(self, event):  # noqa: N802
+        if self.pipeline.pending_count:
+            event.ignore()
+            self.pipeline.begin_drain()
+            for tab in (self.wheat_tab, self.grain_tab):
+                tab._closing = True
+            self._close_timer.start()
+            self._continue_close()
+            return
+        self._close_timer.stop()
         try:
             self.wheat_tab.shutdown()
             self.grain_tab.shutdown()
+            self.pipeline.shutdown()
         except Exception:
             log.exception("close shutdown error")
         super().closeEvent(event)
+
+    def _continue_close(self):
+        if not self.pipeline.pending_count:
+            self.close()
+        else:
+            self.set_right_status(
+                f"关闭前等待保存 {self.pipeline.pending_count} 张" +
+                ("；有保存失败，请在照片带重试" if self.pipeline.has_failures else "…")
+            )

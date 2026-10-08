@@ -29,6 +29,8 @@ _COLOR = {
     StepStatus.PASSED:  "#4caf50",
     StepStatus.SKIPPED: "#4caf50",
     StepStatus.FAILED:  "#ef5350",
+    StepStatus.SAVING: "#4296d2",
+    StepStatus.SAVE_FAILED: "#ef5350",
 }
 _BORDER = {
     StepStatus.CURRENT: "#FFEB3B",  # 当前格亮色边框,一眼看到
@@ -98,6 +100,8 @@ class SpikePanel(QGroupBox):
         self._prefix_clearer: Optional[Callable[[], None]] = None
         self._precheck: Optional[Callable[[], tuple[bool, str]]] = None
         self._start_busy: bool = False
+        self._capture_busy = False
+        self._completion_announced = False
         self._reset_timer = QTimer(self)
         self._reset_timer.setSingleShot(True)
         self._reset_timer.timeout.connect(self._auto_reset_after_complete)
@@ -126,6 +130,20 @@ class SpikePanel(QGroupBox):
         """锁定/解锁启动阶段的配置控件。"""
         self._start_busy = bool(busy)
         self._refresh()
+
+    def set_capture_busy(self, busy: bool) -> None:
+        if self._capture_busy == busy:
+            return
+        self._capture_busy = busy
+        self._refresh()
+
+    def capture_result(self, session, capture_id, **kwargs) -> None:
+        self.workflow.apply_capture_result(session, capture_id, **kwargs)
+        self._refresh()
+        if self.workflow.is_complete() and not self._capture_busy and not self._completion_announced:
+            self._completion_announced = True
+            self.workflow_completed.emit()
+            self._reset_timer.start(self._AUTO_RESET_DELAY_MS)
 
     # ---------------- 显示辅助 ----------------
 
@@ -289,6 +307,8 @@ class SpikePanel(QGroupBox):
         self.lbl_collision.show()
 
     def _on_reset_clicked(self) -> None:
+        if self._capture_busy:
+            return
         if self.workflow.active and not self.workflow.is_complete():
             ok = QMessageBox.question(
                 self, "确认", "当前进度将丢失,确定重置?",
@@ -299,14 +319,18 @@ class SpikePanel(QGroupBox):
                 return
         self._reset_timer.stop()
         self.workflow.reset()
+        self._completion_announced = False
         self._clear_grid()
         self._show_collision("", ok=True)
         self._refresh()
         self.workflow_state_changed.emit(False)
 
     def _auto_reset_after_complete(self) -> None:
+        if self._capture_busy:
+            return
         was_active = self.workflow.active
         self.workflow.reset()
+        self._completion_announced = False
         self._clear_grid()
         self._show_collision("", ok=True)
         self._refresh()
@@ -415,7 +439,7 @@ class SpikePanel(QGroupBox):
             w = w.parentWidget()
 
     def _on_cell_clicked(self, btn: _CellButton) -> None:
-        if not self.workflow.active:
+        if not self.workflow.active or self._capture_busy:
             return
         cur = self.workflow.current_step()
         if cur is not None and cur.rep == btn.rep and cur.side == btn.side:
@@ -448,7 +472,7 @@ class SpikePanel(QGroupBox):
         if self.cb_start_side is not None:
             self.cb_start_side.setEnabled(configurable)
         self.btn_start.setEnabled(configurable)
-        self.btn_reset.setEnabled(active)
+        self.btn_reset.setEnabled(active and not self._capture_busy)
 
         if active and self._cells:
             steps = self.workflow.steps()
@@ -478,7 +502,7 @@ class SpikePanel(QGroupBox):
             )
         else:
             # active 但既未完成又无当前格(异常态)— 明确提示,不停留在旧文案
-            self.lbl_current.setText("⚠ 工作流状态异常,请点[重置]")
+            self.lbl_current.setText("照片已拍完，正在后台保存…")
             self.lbl_current.setStyleSheet(
                 "color: #ef5350; font-size: 12px; font-weight: 600;"
             )
@@ -497,4 +521,8 @@ class SpikePanel(QGroupBox):
         if step.status == StepStatus.FAILED:
             sc = f"BRISQUE={step.score:.2f}" if step.score is not None else ""
             return f"{head}\n✗ 不合格 {sc} — 需重拍"
+        if step.status == StepStatus.SAVING:
+            return f"{head}\n质量通过，等待保存完成"
+        if step.status == StepStatus.SAVE_FAILED:
+            return f"{head}\n保存失败，请在底部照片带重试"
         return head

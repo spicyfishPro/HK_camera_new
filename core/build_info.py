@@ -13,7 +13,7 @@ from functools import lru_cache
 from .paths import ROOT_BUNDLE
 
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 
 @dataclass(frozen=True)

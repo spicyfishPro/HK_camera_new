@@ -41,3 +41,12 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+      - name: Check capture UI at 125 and 150 percent scaling
+        shell: pwsh
+        run: |
+          foreach ($scale in @("1.25", "1.5")) {
+            $env:QT_SCALE_FACTOR = $scale
+            python -m unittest discover -s tests -p test_capture_ui.py -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

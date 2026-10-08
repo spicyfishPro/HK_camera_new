@@ -185,3 +185,57 @@ class StreamWorkerControlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreshSnapshotTests(unittest.TestCase):
+    def test_fresh_request_does_not_reuse_cached_frame(self):
+        camera = _FakeCamera()
+        camera.set_latest_frame_strategy = lambda: True
+        worker = StreamWorker(camera)
+        worker.set_saving(True)
+        thread = threading.Thread(target=worker.run, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(_wait_for(lambda: worker.latest_frame is not None))
+            previous = worker.latest_frame.metadata
+            first = worker.fresh_snapshot('first', 1)
+            second = worker.fresh_snapshot('second', 1)
+            self.assertGreater(first.metadata, previous)
+            self.assertGreater(second.metadata, first.metadata)
+            self.assertEqual(camera.calls.count('stop'), 0)
+            self.assertEqual(worker._fresh_requests, {})
+        finally:
+            worker.stop(); thread.join(1)
+        self.assertFalse(thread.is_alive())
+
+    def test_fresh_request_timeout_removes_request(self):
+        worker = StreamWorker(_FakeCamera())
+        with self.assertRaises(RuntimeError):
+            worker.fresh_snapshot('timeout', .02)
+        self.assertEqual(worker._fresh_requests, {})
+        worker.stop()
+
+    def test_sdk_cache_is_cleared_before_requested_snapshot(self):
+        camera=_FakeCamera()
+        camera.set_latest_frame_strategy=lambda: True
+        camera.clear_image_buffer=lambda: camera.calls.append('clear') or True
+        worker=StreamWorker(camera)
+        thread=threading.Thread(target=worker.run,daemon=True);thread.start()
+        try:
+            self.assertTrue(_wait_for(lambda:worker.latest_frame is not None))
+            worker.fresh_snapshot('new',1)
+            self.assertIn('clear',camera.calls)
+            self.assertEqual(camera.calls.count('stop'),0)
+        finally:
+            worker.stop();thread.join(1)
+
+    def test_failed_cache_clear_does_not_accept_old_picture(self):
+        camera=_FakeCamera();camera.clear_image_buffer=lambda:False
+        worker=StreamWorker(camera)
+        thread=threading.Thread(target=worker.run,daemon=True);thread.start()
+        try:
+            with self.assertRaisesRegex(RuntimeError,'旧帧缓存'):
+                worker.fresh_snapshot('new',1)
+            self.assertEqual(worker._fresh_errors,{})
+        finally:
+            worker.stop();thread.join(1)

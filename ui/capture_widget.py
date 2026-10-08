@@ -7,9 +7,9 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from typing import Literal, Optional
 
 import cv2
@@ -26,17 +26,16 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTabWidget, QFileDialog, QMessageBox,
     QSizePolicy, QApplication, QAbstractSpinBox, QButtonGroup,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsPolygonItem,
-    QFrame, QScrollArea,
+    QFrame, QScrollArea, QSplitter,
 )
 
 from core import naming, wb_config
 from core.acquisition_metadata import (
     CaptureMetadata,
     FrameSnapshot,
-    save_bgr_with_metadata,
 )
 from core.camera import HikCamera, CameraError, DeviceInfo
-from core.capture_processing import ReusableImageRotator
+from core.capture_pipeline import CapturePipeline, CaptureJob, CaptureEvent
 from core.correction import FlatFieldCorrection
 from core.field_tag_lookup import (
     FieldTagDetection,
@@ -46,9 +45,10 @@ from core.field_tag_lookup import (
     parse_accession_response,
 )
 from core.paths import CALIB_DIR as _CALIB_DIR, LOGS_DIR as _LOG_DIR, CAPTURE_LOG as _CAPTURE_LOG
-from core.quality import BRISQUEScorer, DEFAULT_THRESHOLD, is_pass
+from core.quality import BRISQUEScorer, DEFAULT_THRESHOLD
 from .spike_panel import SpikePanel, WHEAT_SIDES, GRAIN_SIDES
 from .stream_worker import StreamWorker
+from .photo_gallery import PhotoGallery
 
 _BRISQUE_HISTORY_LEN = 10
 
@@ -353,18 +353,15 @@ class CaptureWidget(QWidget):
     """采集 tab。mode='wheat' 显示 side 控件,'grain' 隐藏。"""
 
     # 抓拍后台线程 → 主线程的通讯信号(Qt 自动 QueuedConnection)
-    _snap_done = pyqtSignal(object, float, object)  # path, elapsed_seconds, warnings
-    _snap_failed = pyqtSignal(str)
-    # BRISQUE 评分后台线程 → 主线程
-    _brisque_done = pyqtSignal(object, float, float)   # path, score, elapsed
-    _brisque_failed = pyqtSignal(object, str)          # path, error
     # 挂牌二维码后台线程 → 主线程
     _qr_detection_done = pyqtSignal(int, object)       # request_id, FieldTagDetection
     _qr_detection_failed = pyqtSignal(int, str)        # request_id, safe_message
     # 两个页签之间仅在内存中同步，不接入任何持久化配置。
     bearer_key_changed = pyqtSignal(str)
 
-    def __init__(self, mode: Mode, parent=None):
+    _pipeline_event = pyqtSignal(object)
+
+    def __init__(self, mode: Mode, parent=None, pipeline=None):
         super().__init__(parent)
         self.mode: Mode = mode
         self.camera = HikCamera()
@@ -372,7 +369,17 @@ class CaptureWidget(QWidget):
         self._save_dir: Optional[Path] = None
         self._devices: list[DeviceInfo] = []
         self._rotation_deg: int = 180
-        self._save_rotator = ReusableImageRotator()
+        self._owner = uuid4().hex
+        self._owns_pipeline = pipeline is None
+        self.pipeline = pipeline or CapturePipeline(self._pipeline_event.emit)
+        self._pipeline_event.connect(self._on_pipeline_event)
+        self._capture_attempts = {}
+        self._preparing_id = None
+        self._closing = False
+        self._capacity_timer = QTimer(self)
+        self._capacity_timer.setInterval(100)
+        self._capacity_timer.timeout.connect(self._refresh_capture_capacity)
+        self._capacity_timer.start()
         self._latest_preview_bgr: Optional[np.ndarray] = None
         self._prefix_source: Literal["manual", "qr"] = "manual"
         self._active_field_tag_code: Optional[str] = None
@@ -416,19 +423,9 @@ class CaptureWidget(QWidget):
 
         # 麦穗工作流面板 — 只在 wheat 模式存在;grain 永远为 None
         self.spike_panel: Optional[SpikePanel] = None
-        # 工作流模式下 snap → brisque 期间不放行下次抓拍
-        self._workflow_pending: bool = False
-        # 写盘与 BRISQUE 并行；只有写盘成功后才能将已到达的评分结果
-        # 应用到工作流，避免评分极快时在保存失败前提前推进。
-        self._workflow_save_done: bool = False
-        self._workflow_quality_result: tuple[bool, float, str | None] | None = None
 
         self._build_ui()
         self._bind_signals()
-        self._snap_done.connect(self._on_snap_done)
-        self._snap_failed.connect(self._on_snap_failed)
-        self._brisque_done.connect(self._on_brisque_done)
-        self._brisque_failed.connect(self._on_brisque_failed)
         self._qr_detection_done.connect(self._on_qr_detection_done)
         self._qr_detection_failed.connect(self._on_qr_detection_failed)
         self.view.display_cleared.connect(self._on_preview_cleared)
@@ -442,7 +439,12 @@ class CaptureWidget(QWidget):
     # ============================== UI ==============================
 
     def _build_ui(self) -> None:
-        root = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._capture_splitter = QSplitter(Qt.Orientation.Vertical)
+        outer.addWidget(self._capture_splitter)
+        top = QWidget()
+        root = QHBoxLayout(top)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
 
@@ -494,9 +496,9 @@ class CaptureWidget(QWidget):
         right.setSpacing(6)
         right.addLayout(self._build_capture_buttons())
         # 保存成功提示音(默认不开)— 勾选框带白色轮廓,深色背景下醒目
-        self.cb_sound = QCheckBox("保存成功提示音(叮咚)")
+        self.cb_sound = QCheckBox("质量通过提示音（可拍下一张）")
         self.cb_sound.setChecked(False)
-        self.cb_sound.setToolTip("勾选后,每张图片保存成功时播放 Windows 提示音")
+        self.cb_sound.setToolTip("质量检查通过后提示可以切换姿势；图片继续后台保存")
         self.cb_sound.setStyleSheet(
             "QCheckBox::indicator {"
             "  width: 15px; height: 15px;"
@@ -520,6 +522,15 @@ class CaptureWidget(QWidget):
         root.addWidget(left_scroll)
         root.addWidget(self.view, stretch=1)
         root.addWidget(right_scroll)
+        self._capture_splitter.addWidget(top)
+        self.gallery = PhotoGallery(self.pipeline, self)
+        self.gallery.retry_requested.connect(self.pipeline.retry)
+        self._capture_splitter.addWidget(self.gallery)
+        self._capture_splitter.setStretchFactor(0, 1)
+        self._capture_splitter.setStretchFactor(1, 0)
+        self._capture_splitter.setSizes([610, 190])
+        self.le_prefix.editingFinished.connect(self._sync_gallery_context)
+        self.cb_format.currentTextChanged.connect(lambda _: self._sync_gallery_context())
 
     @staticmethod
     def _wrap_scroll(inner: QWidget) -> QScrollArea:
@@ -889,7 +900,7 @@ class CaptureWidget(QWidget):
         r += 1
         self.lbl_brisque_hint = QLabel(
             "评分原理:BRISQUE 越低越好(0=最佳,超过阈值不合格)\n"
-            f"日志: logs/capture_log.csv"
+            "日志: logs/capture_log.csv"
         )
         self.lbl_brisque_hint.setStyleSheet("color: #777; font-size: 10px;")
         self.lbl_brisque_hint.setWordWrap(True)
@@ -1117,7 +1128,6 @@ class CaptureWidget(QWidget):
             except CameraError as e:
                 self._err(str(e))
         self.view.clear_display()
-        self._save_rotator.clear()
         self._clear_metadata_camera_cache()
         self._fill_device_info(None)
         self._update_button_states()
@@ -1180,13 +1190,11 @@ class CaptureWidget(QWidget):
         self._update_button_states(streaming=False)
 
     def _on_frame(self, bgr: np.ndarray) -> None:
-        # 保存期间丢弃已在 Qt 队列中的最后一帧，让画面从
-        # 按下抓拍到写盘完成保持冻结。无论显示还是丢弃都必须归还单槽。
+        # 保存与预览独立；无论显示是否成功都必须归还单槽。
         sender = self.sender()
         stream = sender if isinstance(sender, StreamWorker) else self._stream
         try:
-            if not self._snap_in_flight:
-                self._show_preview_frame(self._apply_rotation(bgr))
+            self._show_preview_frame(self._apply_rotation(bgr))
         finally:
             if stream is not None:
                 stream.display_consumed()
@@ -1247,315 +1255,179 @@ class CaptureWidget(QWidget):
             return
         self.snap()
 
+    def _estimated_capture_bytes(self) -> int:
+        snapshot = self._stream.latest_frame if self._stream else None
+        size = snapshot.bgr.nbytes if snapshot is not None else 5120 * 5120 * 3
+        return size * (4 if self.correction.enabled and self.cb_save_raw.isChecked() else 3)
+
+    def _sync_gallery_context(self) -> None:
+        panel = self.spike_panel
+        wf = panel.workflow if panel else None
+        prefix = wf.prefix if wf and wf.active else self.le_prefix.text().strip()
+        total = wf.total if wf and wf.active else 0
+        self.gallery.set_context(self._save_dir, prefix, self.mode, total,
+                                 self.cb_format.currentText())
+
+    def _refresh_capture_capacity(self) -> None:
+        if self._shutting_down:
+            return
+        can_take = self.pipeline.can_accept(self._estimated_capture_bytes())
+        panel = self.spike_panel
+        wf = panel.workflow if panel else None
+        has_step = not (wf and wf.active) or wf.current_step() is not None
+        self.btn_snap.setEnabled(self.camera.is_connected() and not self._snap_in_flight
+                                 and not self._closing and can_take and has_step)
+        self.btn_snap.setText("抓拍" if can_take else "保存失败，请重试" if self.pipeline.has_failures
+                             else "后台保存中，请稍候")
+        pending = self.pipeline.owner_pending(self._owner) > 0
+        if panel:
+            panel.set_capture_busy(pending)
+            current = wf.current_step() if wf.active else None
+            next_current = (current.rep, current.side) if current else (None, '')
+            if next_current != self.gallery.current:
+                self.gallery.current = next_current
+                self.gallery.list.viewport().update()
+        if self._stream:
+            self._stream.set_saving(self.pipeline.pending_count > 0)
+        # 固定一轮的保存位置和格式，防止断点续拍检查与在途任务不一致。
+        self.btn_choose_dir.setEnabled(not pending)
+        self.cb_format.setEnabled(not pending)
+
     def snap(self) -> None:
-        if self._snap_in_flight or self._workflow_pending:
-            log.debug("snap ignored: already saving/scoring")
+        click_t0 = time.perf_counter()
+        if self._snap_in_flight or self._closing or self._shutting_down:
             return
         if not self.camera.is_connected():
             self._err("请先连接相机")
             return
-
-        click_t0 = time.perf_counter()
-        snapshot_elapsed_s = 0.0
-        stream_for_snap: StreamWorker | None = None
-        pause_requested = False
-        # 立即 disable 按钮 — 后面的验证/取帧可能阻塞到 2s,这段时间不能让用户重复点
+        if not self.pipeline.can_accept(self._estimated_capture_bytes()):
+            self._status("后台保存中，请稍候；保存失败时请在照片带重试", side=True)
+            return
+        self._clear_input_focus()
+        panel = self.spike_panel
+        wf = panel.workflow if panel else None
+        active = bool(wf and wf.active)
+        step = wf.current_step() if active else None
+        if active and step is None:
+            return
+        prefix = wf.prefix if active else self.le_prefix.text().strip()
+        if not prefix:
+            self._err("请输入文件名前缀")
+            return
+        if self._save_dir is None and not self._prompt_save_dir():
+            return
+        self._snap_in_flight = True
         self.btn_snap.setEnabled(False)
         try:
-            # 任何打开的输入框先 commit(模拟"按 Enter"行为)
-            self._clear_input_focus()
-
-            wf_active = self.spike_panel is not None and self.spike_panel.workflow.active
-            current_rep: int | None = None
-            current_side: str | None = None
-            if wf_active:
-                wf = self.spike_panel.workflow
-                cur = wf.current_step()
-                if cur is None:
-                    self._err("工作流状态异常,请重置")
-                    return
-                prefix = wf.prefix
-                current_rep = cur.rep
-                current_side = cur.side or None
-            else:
-                prefix = self.le_prefix.text().strip()
-                if not prefix:
-                    QMessageBox.warning(self, "错误", "请输入文件名前缀")
-                    self.le_prefix.setFocus()
-                    return
-
-            if self._save_dir is None:
-                if not self._prompt_save_dir():
-                    return
-
-            # 连续取流时 latest_frame 返回寿命安全的只读引用，不再
-            # 复制整张 75MiB BGR。取得快照后立即请求取流线程暂停。
-            stream_for_snap = self._stream
-            snapshot_t0 = time.perf_counter()
-            frame_snapshot = self._get_current_frame_snapshot_for_snap()
-            snapshot_elapsed_s = time.perf_counter() - snapshot_t0
-            if frame_snapshot is None:
-                self._err("当前没有可保存的画面,先点连续采集或单次采集")
-                return
-            bgr_raw = frame_snapshot.bgr
-            if stream_for_snap is not None:
-                pause_requested = stream_for_snap.request_pause()
-
-            # 快照 UI 状态(都是 cheap 操作,主线程做)
-            rotation_deg = self._rotation_deg
-            apply_ffc = self.correction.enabled
-            save_raw_too = apply_ffc and self.cb_save_raw.isChecked()
+            stream = self._stream
+            template_frame = stream.latest_frame if stream else self._get_current_frame_snapshot_for_snap()
+            if template_frame is None:
+                raise RuntimeError("尚未取得相机画面，请稍候再拍")
             ext = self.cb_format.currentText().lower()
-            do_brisque = self._brisque_ok and self.brisque is not None
-
-            try:
-                if wf_active:
-                    # 工作流命名:无时间戳、无 serial,失败时覆盖式重拍
-                    filename = wf.filename_for_current(ext)
-                    full_path = self._save_dir / filename
-                    raw_path = (
-                        full_path.with_stem(full_path.stem + "_raw")
-                        if save_raw_too else None
-                    )
-                else:
-                    repeat = (
-                        self.sp_repeat.value()
-                        if (self.sp_repeat is not None and self.sp_repeat.value() > 0)
-                        else None
-                    )
-                    side = (
-                        self.cb_side.currentText()
-                        if self.cb_side is not None else None
-                    )
-                    serial = naming.next_serial(
-                        self._save_dir, prefix, repeat=repeat, side=side,
-                    )
-                    filename = naming.build_filename(
-                        prefix, repeat=repeat, side=side, serial=serial, ext=ext,
-                    )
-                    full_path = naming.resolve_conflict(self._save_dir / filename)
-                    raw_path = (
-                        full_path.with_stem(full_path.stem + "_raw")
-                        if save_raw_too else None
-                    )
-            except Exception as e:
-                log.exception("snap failed (naming)")
-                self._err(f"命名失败: {e}")
-                return
-
-            raw_h, raw_w = bgr_raw.shape[:2]
-            if rotation_deg in (90, 270):
-                output_width, output_height = raw_h, raw_w
+            if active:
+                path = self._save_dir / wf.filename_for_current(ext)
+                overwrite = step.status.value == 'failed' or step.overwrite_allowed
             else:
-                output_width, output_height = raw_w, raw_h
-            capture_metadata = self._create_capture_metadata(
-                frame_snapshot=frame_snapshot,
-                prefix=prefix,
-                workflow_active=wf_active,
-                rep=current_rep,
-                side=current_side,
-                path=full_path,
-                rotation_deg=rotation_deg,
-                ffc_applied=apply_ffc,
-                output_width=output_width,
-                output_height=output_height,
-            )
-            raw_metadata = (
-                replace(
-                    capture_metadata,
-                    filename=raw_path.name,
-                    image_variant="unffc_demosaiced",
-                    ffc_applied=False,
-                )
-                if raw_path is not None else None
-            )
+                serial = naming.next_serial(self._save_dir, prefix)
+                reserved = self.pipeline.reserved_paths()
+                while True:
+                    path = self._save_dir / naming.build_filename(prefix, serial=serial, ext=ext)
+                    if path not in reserved and not path.exists():
+                        break
+                    serial += 1
+                overwrite = False
+            raw_path = path.with_stem(path.stem + "_raw") if (
+                self.correction.enabled and self.cb_save_raw.isChecked()) else None
+            correction = self.correction.snapshot()
+            h,w = template_frame.bgr.shape[:2]
+            if self._rotation_deg in (90,270):
+                h,w = w,h
+            metadata = self._create_capture_metadata(
+                frame_snapshot=template_frame, prefix=prefix, workflow_active=active,
+                rep=step.rep if step else None, side=step.side or None if step else None,
+                path=path, rotation_deg=self._rotation_deg, ffc_applied=correction.enabled,
+                output_width=w, output_height=h)
+            session = wf.session_id if active else self._owner
+            attempt_key = (session, path)
+            attempt = self._capture_attempts.get(attempt_key, 0) + 1
+            job_id = metadata.capture_id
+            get_frame = (lambda: stream.fresh_snapshot(job_id)) if stream else (lambda: template_frame)
+            job = CaptureJob(metadata,self._owner,session,attempt,path,raw_path,
+                             get_frame,correction,self.brisque if self._brisque_ok else None,
+                             self._brisque_threshold,self._estimated_capture_bytes(),overwrite,
+                             submitted_at=click_t0)
+            self._sync_gallery_context()
+            if not self.pipeline.submit(job):
+                raise RuntimeError("保存队列已满或文件名已被占用，请稍候再拍")
+            self._capture_attempts[attempt_key] = attempt
+            self._preparing_id = job.id
+            if active:
+                wf.bind_capture(job.id)
+            self._refresh_capture_capacity()
+        except Exception as exc:
+            self._snap_in_flight = False
+            self._preparing_id = None
+            self._refresh_capture_capacity()
+            self._err(str(exc))
 
-            # 锁定 in-flight 状态(防快捷键 / 信号重入)
-            self._snap_in_flight = True
-            if wf_active:
-                self._workflow_pending = True
-                self._workflow_save_done = False
-                self._workflow_quality_result = None
-        finally:
-            # 任何 early-return(_err / 取消保存路径 / 命名失败) → 按钮复位
-            # _snap_in_flight 仅在所有验证都通过时才设 True;
-            # 若仍为 False,说明 snap 中途放弃了,要把按钮放回去
-            if not self._snap_in_flight:
-                if pause_requested and stream_for_snap is not None:
-                    stream_for_snap.resume()
-                self.btn_snap.setEnabled(self.camera.is_connected())
-
-        def _process_worker():
-            """暂停取流后执行 FFC → 旋转 → BRISQUE 快照 → 编码写盘。"""
-            pause_wait_s = 0.0
-            ffc_s = 0.0
-            rotate_s = 0.0
-            quality_prepare_s = 0.0
-            main_save_s = 0.0
-            raw_save_s = 0.0
-            resume_s = 0.0
-            success = False
-            failure: Exception | None = None
-            warnings: list[str] = []
-            try:
-                if pause_requested and stream_for_snap is not None:
-                    pause_t0 = time.perf_counter()
-                    paused = stream_for_snap.wait_until_paused(timeout_s=1.0)
-                    pause_wait_s = time.perf_counter() - pause_t0
-                    if not paused:
-                        log.warning(
-                            "capture stream pause timeout after %.3fs; continue saving",
-                            pause_wait_s,
-                        )
-
-                # 1) FFC(只对要保存的主图做,_raw 不做)
-                stage_t0 = time.perf_counter()
-                if apply_ffc:
-                    bgr_corrected = self.correction.apply_full(bgr_raw)
-                else:
-                    bgr_corrected = bgr_raw
-                ffc_s = time.perf_counter() - stage_t0
-
-                # 2) 固定 180° 常用路径复用预分配缓冲。主图/_raw 分槽，
-                # 防止评分线程还在读主图时被原图覆写。
-                stage_t0 = time.perf_counter()
-                bgr_to_save = self._save_rotator.rotate(
-                    bgr_corrected, rotation_deg, slot="main",
-                )
-                bgr_raw_to_save = (
-                    self._save_rotator.rotate(
-                        bgr_raw, rotation_deg, slot="raw",
-                    )
-                    if save_raw_too else None
-                )
-                rotate_s = time.perf_counter() - stage_t0
-
-                # 3) 评分线程只持有 1024px 小图，不持有会被下一次
-                # 抓拍复用的全分辨率旋转缓冲。
-                if do_brisque and self.brisque is not None:
-                    stage_t0 = time.perf_counter()
-                    bgr_for_score = self.brisque.prepare_ndarray(bgr_to_save)
-                    quality_prepare_s = time.perf_counter() - stage_t0
-
-                    def _brisque_worker():
-                        tb = time.perf_counter()
-                        try:
-                            score = self.brisque.score_prepared(bgr_for_score)
-                        except Exception as exc:
-                            log.exception("brisque error")
-                            self._brisque_failed.emit(full_path, str(exc))
-                            return
-                        if score is None:
-                            self._brisque_failed.emit(full_path, "BRISQUE 返回 None")
-                            return
-                        self._brisque_done.emit(
-                            full_path, score, time.perf_counter() - tb,
-                        )
-
-                    threading.Thread(target=_brisque_worker, daemon=True).start()
-
-                # 4) 主图和可选 _raw 串行写盘，仍保持单次编码内嵌 XMP。
-                stage_t0 = time.perf_counter()
-                save_results = [save_bgr_with_metadata(
-                    bgr_to_save, full_path, capture_metadata,
-                )]
-                main_save_s = time.perf_counter() - stage_t0
-                if bgr_raw_to_save is not None and raw_path is not None:
-                    if raw_metadata is None:
-                        raise RuntimeError("_raw 元数据状态异常")
-                    stage_t0 = time.perf_counter()
-                    save_results.append(
-                        save_bgr_with_metadata(
-                            bgr_raw_to_save, raw_path, raw_metadata,
-                        )
-                    )
-                    raw_save_s = time.perf_counter() - stage_t0
-                warnings = sorted({
-                    result.warning for result in save_results if result.warning
-                })
-                success = True
-            except Exception as exc:
-                log.exception("snap save failed")
-                failure = exc
-            finally:
-                if pause_requested and stream_for_snap is not None:
-                    resume_t0 = time.perf_counter()
-                    stream_for_snap.resume()
-                    resume_s = time.perf_counter() - resume_t0
-
-            total_s = time.perf_counter() - click_t0
-            file_bytes = 0
-            for saved_path in (full_path, raw_path):
-                if saved_path is not None:
-                    try:
-                        file_bytes += saved_path.stat().st_size
-                    except OSError:
-                        pass
-            log.info(
-                "capture perf status=%s total=%.3fs snapshot=%.3fs pause=%.3fs "
-                "ffc=%.3fs rotate=%.3fs quality_prepare=%.3fs main_save=%.3fs "
-                "raw_save=%.3fs resume=%.3fs size=%.1fMiB streaming=%s "
-                "format=%s rotation=%d ffc_enabled=%s raw_enabled=%s "
-                "png_compression=%s png_strategy=default path=%s",
-                "ok" if success else "failed",
-                total_s, snapshot_elapsed_s, pause_wait_s, ffc_s, rotate_s,
-                quality_prepare_s, main_save_s, raw_save_s, resume_s,
-                file_bytes / (1024 * 1024), stream_for_snap is not None,
-                ext, rotation_deg, apply_ffc, save_raw_too,
-                1 if ext == "png" else "n/a", full_path,
-            )
-            if success:
-                self._snap_done.emit(full_path, total_s, warnings)
-            else:
-                self._snap_failed.emit(
-                    str(failure) if failure is not None else "未知保存错误"
-                )
-
-        threading.Thread(target=_process_worker, daemon=True).start()
-
-    def _on_snap_done(
-        self, path: Path, elapsed: float, warnings: list[str],
-    ) -> None:
-        self._snap_in_flight = False
-        if warnings:
-            self.view.show_warning("；".join(warnings), 5000)
-        # 提示音规则:只有"评分通过"才响(在 _on_brisque_done 里触发);
-        # 若本张根本不评分(BRISQUE 不可用),则保存成功即响。
-        no_scoring = not (self._brisque_ok and self.brisque is not None)
-        if no_scoring:
-            self._play_save_sound()
-        # 工作流模式:保存完成后等 BRISQUE,按钮不放开
-        if self._workflow_pending:
-            self._workflow_save_done = True
-            # 如果 BRISQUE 不可用,此路径已无人通知,直接放行并默认通过。
-            # 条件与启动 BRISQUE 线程的 do_brisque 完全一致,避免出现
-            # "没人调 apply_pass → 工作流永久卡死"的缝隙。
-            if not (self._brisque_ok and self.brisque is not None):
-                self._workflow_pending = False
-                if self.spike_panel is not None:
-                    self.spike_panel.apply_pass(-1.0)
-                self.btn_snap.setEnabled(self.camera.is_connected())
-                self._status(f"保存完成({elapsed:.2f}s),无评分", side=True)
-                return
-            if self._workflow_quality_result is not None:
-                self._apply_pending_workflow_quality()
-                return
-            self._status(f"保存完成({elapsed:.2f}s),评分中...", side=True)
+    def _on_pipeline_event(self, event: CaptureEvent) -> None:
+        if self._shutting_down:
             return
-        self.btn_snap.setEnabled(self.camera.is_connected())
-        self._status(f"图片已保存({elapsed:.2f}s): {path.name}", side=True)
-        log.info("snap saved in %.2fs: %s", elapsed, path)
+        if event.owner != self._owner:
+            self._refresh_capture_capacity()
+            return
+        self.gallery.update_event(event)
+        panel = self.spike_panel
+        if panel:
+            panel.set_capture_busy(self.pipeline.owner_pending(self._owner) > 0)
+        if event.state in ('quality', 'capture_failed'):
+            if event.id == self._preparing_id:
+                self._snap_in_flight = False
+                self._preparing_id = None
+        if event.state == 'quality':
+            if event.score is not None:
+                self._brisque_history.append(event.score)
+                self.lbl_brisque_last.setText(f"{event.path.stem}: {event.score:.2f}  "
+                                              f"[{'合格' if event.passed else '不合格'}]")
+                self.lbl_brisque_last.setStyleSheet('color: '+ ('#4caf50' if event.passed else '#ef5350'))
+                self._on_brisque_threshold_changed(self._brisque_threshold)
+            if event.passed:
+                self._play_save_sound()
+            else:
+                self.view.show_warning(f"{event.path.stem} 质量不合格，请重拍")
+            if event.metadata.workflow_active and panel:
+                panel.capture_result(event.session,event.id,passed=event.passed,score=event.score)
+            ready_text = ("可拍下一张" if self.pipeline.can_accept(self._estimated_capture_bytes())
+                          else "质量通过，后台保存中请稍候") if event.passed else "请重拍当前视角"
+            self._status(f"{ready_text}；后台待保存 {self.pipeline.pending_count} 张", side=True)
+        elif event.state == 'saved':
+            if event.metadata.workflow_active and panel:
+                panel.capture_result(event.session,event.id,saved=True)
+            if event.score is not None:
+                self._append_capture_log(event.path,event.score,event.passed,
+                                         event.timings.get('quality_s',0),
+                                         threshold=event.threshold,
+                                         ffc_enabled=event.metadata.ffc_applied)
+            if event.message and '元数据' in event.message:
+                self.view.show_warning(event.message, 5000)
+        elif event.state == 'failed':
+            if event.metadata.workflow_active and panel:
+                panel.capture_result(event.session,event.id,save_failed=True)
+            self.view.show_warning(f"{event.path.stem} 保存失败：{event.message}；请在照片带重试", 5000)
+        elif event.state == 'capture_failed':
+            if event.metadata.workflow_active and panel:
+                panel.capture_result(event.session,event.id,passed=False)
+            self.view.show_warning(f"抓拍失败：{event.message}，请重拍", 5000)
+        self._refresh_capture_capacity()
 
-    def _on_snap_failed(self, msg: str) -> None:
-        self._snap_in_flight = False
-        self._workflow_pending = False
-        self._workflow_save_done = False
-        self._workflow_quality_result = None
-        self.btn_snap.setEnabled(self.camera.is_connected())
-        self._err(f"保存失败: {msg}")
+        if event.state == 'quality' and event.submitted_at:
+            log.info("capture ready id=%s ready=%.3fs available=%s frame=%s pending=%s",
+                     event.id, time.perf_counter()-event.submitted_at,
+                     self.btn_snap.isEnabled(), event.metadata.frame.frame_number,
+                     self.pipeline.pending_count)
 
     def _play_save_sound(self) -> None:
-        """保存成功提示音(勾选才响)。
+        """质量通过、可切换姿势的提示音(勾选才响)。
 
         故意不用 winsound.MessageBeep(那是 Windows 对话框那个 'ding',
         和程序里的弹窗音一样,容易混淆)。改用 winsound.Beep 现场合成一段
@@ -1594,71 +1466,9 @@ class CaptureWidget(QWidget):
         else:
             self.lbl_brisque_stats.setText(f"最近 0 张 | 阈值 {self._brisque_threshold:.0f}")
 
-    def _on_brisque_done(self, path: Path, score: float, elapsed: float) -> None:
-        passed = is_pass(score, self._brisque_threshold)
-        verdict = "合格" if passed else "不合格"
-        # 历史
-        self._brisque_history.append(score)
-        # UI: 本张分数,绿/红配色
-        color = "#4caf50" if passed else "#ef5350"
-        self.lbl_brisque_last.setText(f"本张: {score:.2f}  [{verdict}]")
-        self.lbl_brisque_last.setStyleSheet(
-            f"font-size: 14px; font-weight: 600; color: {color};"
-        )
-        # 统计
-        if self._brisque_history:
-            arr = list(self._brisque_history)
-            self.lbl_brisque_stats.setText(
-                f"最近 {len(arr)} 张 | 均 {sum(arr) / len(arr):.1f} | "
-                f"最差 {max(arr):.1f} | 最好 {min(arr):.1f} | 阈值 {self._brisque_threshold:.0f}"
-            )
-        # 合格 → 提示音(勾选才响);不合格 → 画面顶部红底黄字警告 3 秒
-        if passed:
-            self._play_save_sound()
-        else:
-            self.view.show_warning(f"⚠ 此张照片建议重拍 (BRISQUE={score:.1f})")
-        # CSV 日志
-        self._append_capture_log(path, score, passed, elapsed)
-        log.info("BRISQUE %s = %.2f (%s, %.2fs)", path.name, score, verdict, elapsed)
-
-        # 工作流路由
-        if self._workflow_pending and self.spike_panel is not None:
-            self._workflow_quality_result = (passed, score, None)
-            if self._workflow_save_done:
-                self._apply_pending_workflow_quality()
-
-    def _on_brisque_failed(self, path: Path, msg: str) -> None:
-        log.warning("BRISQUE %s 失败: %s", path.name if path else "?", msg)
-        self.lbl_brisque_last.setText(f"本张: 评分失败")
-        self.lbl_brisque_last.setStyleSheet("font-size: 14px; font-weight: 600; color: #888;")
-        # 工作流路由:评分失败默认通过(图已存盘),不阻塞流程
-        if self._workflow_pending and self.spike_panel is not None:
-            self._workflow_quality_result = (
-                True, -1.0, "评分失败,默认通过",
-            )
-            if self._workflow_save_done:
-                self._apply_pending_workflow_quality()
-
-    def _apply_pending_workflow_quality(self) -> None:
-        """在写盘成功与评分都完成后，原子地推进一次工作流。"""
-        result = self._workflow_quality_result
-        panel = self.spike_panel
-        if not self._workflow_pending or result is None or panel is None:
-            return
-        passed, score, status = result
-        self._workflow_pending = False
-        self._workflow_save_done = False
-        self._workflow_quality_result = None
-        if passed:
-            panel.apply_pass(score)
-        else:
-            panel.apply_fail(score)
-        self.btn_snap.setEnabled(self.camera.is_connected())
-        if status:
-            self._status(status, side=True)
-
     def _append_capture_log(
         self, path: Path, score: float, passed: bool, elapsed: float,
+        *, threshold: float | None = None, ffc_enabled: bool | None = None,
     ) -> None:
         """追加到 logs/capture_log.csv。首次写入加表头。"""
         try:
@@ -1678,9 +1488,9 @@ class CaptureWidget(QWidget):
                     path.name,
                     f"{score:.3f}",
                     "合格" if passed else "不合格",
-                    f"{self._brisque_threshold:.1f}",
+                    f"{self._brisque_threshold if threshold is None else threshold:.1f}",
                     f"{elapsed:.3f}",
-                    str(self.correction.enabled),
+                    str(self.correction.enabled if ffc_enabled is None else ffc_enabled),
                 ])
         except Exception:
             log.exception("写 capture_log.csv 失败")
@@ -1828,6 +1638,7 @@ class CaptureWidget(QWidget):
                 continue
             break
         self._save_dir = Path(d)
+        self._sync_gallery_context()
         self.lbl_save_dir.setText(str(self._save_dir))
         self.lbl_save_dir.setStyleSheet("color: #d8d8d8;")
         if self.spike_panel is not None:
@@ -2205,7 +2016,8 @@ class CaptureWidget(QWidget):
         self.btn_disconnect.setEnabled(connected)
         self.btn_stream.setEnabled(connected)
         self.btn_single.setEnabled(connected)
-        self.btn_snap.setEnabled(connected)
+        self.btn_snap.setEnabled(connected and not self._snap_in_flight
+                                 and not self._closing and self.pipeline.can_accept())
         self.btn_reload_params.setEnabled(connected)
 
     def _status(self, msg: str, *, side: bool = False) -> None:
@@ -2610,6 +2422,8 @@ class CaptureWidget(QWidget):
         if not active:
             self._active_field_tag_code = None
         self._update_prefix_source_controls()
+        if active:
+            self._sync_gallery_context()
         if self.sp_repeat is not None:
             self.sp_repeat.setEnabled(not active)
         if self.cb_side is not None:
@@ -2617,7 +2431,8 @@ class CaptureWidget(QWidget):
 
     def _on_workflow_completed(self) -> None:
         """全部 PASSED 后由 SpikePanel 发出 — 这里只做提示。"""
-        self._status("✓ 当前品种已完成,1.5s 后看板自动重置", side=True)
+        self.gallery.mark_complete()
+        self._status("✓ 当前品种已全部保存,1.5s 后看板自动重置", side=True)
 
     def _clear_prefix_after_workflow(self) -> None:
         """整轮工作流完成自动重置时清空品种前缀,防止下一品种忘改覆盖照片。"""
@@ -2634,9 +2449,14 @@ class CaptureWidget(QWidget):
 
     def shutdown(self) -> None:
         """关闭程序前调用,确保线程和设备资源被释放。"""
+        if self.pipeline.owner_pending(self._owner):
+            return False
         self._shutting_down = True
+        self._capacity_timer.stop()
+        self.gallery.shutdown()
+        if self._owns_pipeline:
+            self.pipeline.shutdown()
         self._latest_preview_bgr = None
-        self._save_rotator.clear()
         self._clear_metadata_camera_cache()
         self._invalidate_qr_request()
         try:

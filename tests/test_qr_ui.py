@@ -4,11 +4,14 @@ import os
 import sys
 import types
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
+from core.capture_pipeline import CaptureEvent
+from core.spike_workflow import StepStatus
+from test_acquisition_metadata import sample_metadata
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -181,46 +184,45 @@ class QrUiTests(unittest.TestCase):
         self.assertTrue(reply.deleted)
         self.assertEqual(self.widget._active_field_tag_code, "PABC123")
 
+    def _event(self, state, **kwargs):
+        wf = self.widget.spike_panel.workflow
+        meta = replace(sample_metadata(), accession_no='A', capture_id='capture-a')
+        return CaptureEvent('capture-a', self.widget._owner, wf.session_id, 1, meta,
+                            Path('sample.png'), None, state, **kwargs)
+
     def test_metadata_warning_is_shown_without_turning_save_into_failure(self):
         self.widget.view.show_warning = Mock()
-        self.widget._on_snap_done(
-            Path("sample.png"), 0.1,
-            ["照片已保存，但未写入采集元数据"],
-        )
+        self.widget._on_pipeline_event(self._event(
+            'saved', message='照片已保存，但未写入采集元数据'))
         self.widget.view.show_warning.assert_called_once_with(
-            "照片已保存，但未写入采集元数据", 5000,
-        )
+            '照片已保存，但未写入采集元数据', 5000)
         self.assertFalse(self.widget._snap_in_flight)
 
-    def test_fast_brisque_waits_for_successful_image_save(self):
-        panel = self.widget.spike_panel
-        panel.apply_pass = Mock()
-        panel.apply_fail = Mock()
-        self.widget._workflow_pending = True
-        self.widget._workflow_save_done = False
+    def test_quality_advances_before_save_but_not_green(self):
+        wf = self.widget.spike_panel.workflow
+        wf.start('A', total=1)
+        wf.bind_capture('capture-a')
         self.widget._snap_in_flight = True
-        with patch.object(self.widget, "_append_capture_log"):
-            self.widget._on_brisque_done(Path("sample.png"), 5.0, 0.01)
-        panel.apply_pass.assert_not_called()
+        self.widget._preparing_id = 'capture-a'
+        self.widget._on_pipeline_event(self._event('quality', score=5, passed=True))
+        self.assertEqual(wf.current_step().side, 'side')
+        self.assertEqual(wf.steps()[0].status, StepStatus.SAVING)
+        self.assertFalse(wf.is_complete())
+        self.assertFalse(self.widget._snap_in_flight)
+        with patch.object(self.widget, '_append_capture_log'):
+            self.widget._on_pipeline_event(self._event('saved', score=5, passed=True))
+        self.assertEqual(wf.steps()[0].status, StepStatus.PASSED)
+        self.assertEqual(wf.current_step().side, 'side')
 
-        self.widget._on_snap_done(Path("sample.png"), 0.1, [])
-        panel.apply_pass.assert_called_once_with(5.0)
-        panel.apply_fail.assert_not_called()
-        self.assertFalse(self.widget._workflow_pending)
-
-    def test_failed_image_save_discards_early_brisque_result(self):
-        panel = self.widget.spike_panel
-        panel.apply_pass = Mock()
-        self.widget._workflow_pending = True
-        self.widget._workflow_save_done = False
-        self.widget._snap_in_flight = True
-        with patch.object(self.widget, "_append_capture_log"):
-            self.widget._on_brisque_done(Path("sample.png"), 5.0, 0.01)
-        with patch.object(self.widget, "_err"):
-            self.widget._on_snap_failed("disk full")
-        panel.apply_pass.assert_not_called()
-        self.assertFalse(self.widget._workflow_pending)
-        self.assertIsNone(self.widget._workflow_quality_result)
+    def test_failed_save_marks_original_position_without_moving_cursor(self):
+        wf = self.widget.spike_panel.workflow
+        wf.start('A', total=1)
+        wf.bind_capture('capture-a')
+        self.widget._on_pipeline_event(self._event('quality', score=5, passed=True))
+        self.widget._on_pipeline_event(self._event('failed', message='disk full'))
+        self.assertEqual(wf.steps()[0].status, StepStatus.SAVE_FAILED)
+        self.assertEqual(wf.current_step().side, 'side')
+        self.assertFalse(wf.is_complete())
 
     def test_http_and_response_errors_never_start(self):
         self._select_qr_mode()

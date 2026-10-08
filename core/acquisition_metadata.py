@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -288,6 +290,8 @@ class SaveResult:
     metadata_embedded: bool
     metadata_format: str | None
     warning: str | None = None
+    encode_s: float = 0.0
+    write_s: float = 0.0
 
 
 def _encoding_params(ext: str) -> list[int]:
@@ -311,7 +315,7 @@ def save_bgr_plain(bgr: np.ndarray, path: Path) -> None:
 
 def _save_jpeg_or_png_with_xmp(
     bgr: np.ndarray, path: Path, xmp: bytes,
-) -> None:
+) -> tuple[float, float]:
     encoder = getattr(cv2, "imencodeWithMetadata", None)
     metadata_type = getattr(cv2, "IMAGE_METADATA_XMP", None)
     if encoder is None or metadata_type is None:
@@ -321,12 +325,15 @@ def _save_jpeg_or_png_with_xmp(
     # 防止编码器读取到 numpy 缓冲末尾之后的随机字节。NUL 本身不会写进 iTXt。
     metadata_payload = xmp + b"\x00" if ext == ".png" else xmp
     metadata = np.frombuffer(metadata_payload, dtype=np.uint8)
+    started = time.perf_counter()
     ok, buf = encoder(
         ext, bgr, [metadata_type], [metadata], _encoding_params(ext),
     )
     if not ok:
         raise RuntimeError("OpenCV XMP 元数据编码失败")
+    encoded = time.perf_counter()
     buf.tofile(str(path))
+    return encoded - started, time.perf_counter() - encoded
 
 
 def _save_tiff_with_xmp(bgr: np.ndarray, path: Path, xmp: bytes) -> None:
@@ -355,14 +362,16 @@ def save_bgr_with_metadata(
         raise ValueError(f"不支持的图片格式: {ext}")
 
     try:
+        encode_s = write_s = 0.0
         xmp = metadata.to_xmp_bytes()
         if ext in (".tif", ".tiff"):
             _save_tiff_with_xmp(bgr, path, xmp)
             metadata_format = "TIFF tag 700 (XMP)"
         else:
-            _save_jpeg_or_png_with_xmp(bgr, path, xmp)
+            encode_s, write_s = _save_jpeg_or_png_with_xmp(bgr, path, xmp)
             metadata_format = "XMP"
-        return SaveResult(path, True, metadata_format)
+        return SaveResult(path, True, metadata_format,
+                          encode_s=encode_s, write_s=write_s)
     except Exception as exc:
         # 不把对象/请求上下文写入日志，只记录异常类型与安全固定文案。
         log.warning(
@@ -376,3 +385,23 @@ def save_bgr_with_metadata(
             metadata_format=None,
             warning="照片已保存，但未写入采集元数据",
         )
+
+
+def save_bgr_atomic(bgr: np.ndarray, path: Path, metadata: CaptureMetadata,
+                    *, overwrite: bool = False) -> SaveResult:
+    """同目录临时文件提交；失败时不损坏原有正式照片。"""
+    from dataclasses import replace
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{uuid4().hex}.partial{path.suffix}")
+    try:
+        result = save_bgr_with_metadata(bgr, temporary, metadata)
+        if overwrite:
+            os.replace(temporary, path)
+        elif os.name == "nt":
+            # Windows rename 不覆盖现有目标，兼容 NTFS 与 exFAT。
+            os.rename(temporary, path)
+        else:
+            os.link(temporary, path)  # O_EXCL 语义；不覆盖外部新建的同名照片。
+        return replace(result, path=path)
+    finally:
+        temporary.unlink(missing_ok=True)

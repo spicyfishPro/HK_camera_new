@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +28,26 @@ import cv2
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CorrectionSnapshot:
+    enabled: bool
+    gain: np.ndarray | None
+    dark: np.ndarray | None
+    reference_id: str | None
+
+    def apply(self, bgr: np.ndarray) -> np.ndarray:
+        if not self.enabled or self.gain is None:
+            return bgr
+        if bgr.shape != self.gain.shape:
+            raise ValueError("照片尺寸与拍摄时的 FFC 参考不一致")
+        work = bgr.astype(np.float32)
+        if self.dark is not None:
+            np.subtract(work, self.dark, out=work)
+        np.multiply(work, self.gain, out=work)
+        np.clip(work, 0, 255, out=work)
+        return work.astype(np.uint8)
 
 
 class FlatFieldCorrection:
@@ -66,6 +87,11 @@ class FlatFieldCorrection:
     @property
     def has_flat(self) -> bool:
         return self._flat_full is not None
+
+    def snapshot(self) -> CorrectionSnapshot:
+        # 主线程调用；参考数组只替换、不原地修改，强引用固定本次参数。
+        return CorrectionSnapshot(self.enabled, self._gain_full,
+                                  self._dark_full, self._reference_id)
 
     @property
     def has_dark(self) -> bool:

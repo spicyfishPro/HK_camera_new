@@ -388,6 +388,28 @@ class HikCamera:
 
     # ---------------- 取流 ----------------
 
+    def set_latest_frame_strategy(self) -> bool:
+        """在取流所属线程、StartGrabbing 之前配置最新帧策略。"""
+        if self._cam is None:
+            return False
+        try:
+            ret = self._cam.MV_CC_SetGrabStrategy(1)  # LatestImagesOnly
+            if ret != 0:
+                log.warning("最新帧策略不可用: %s；不启用取流限速", hex_err(ret))
+            return ret == 0
+        except (AttributeError, OSError):
+            log.warning("MVS 不支持最新帧策略；不启用取流限速")
+            return False
+
+    def clear_image_buffer(self) -> bool:
+        """由取流线程在抓拍请求后清理 SDK 中请求前的缓存帧。"""
+        if self._cam is None:
+            return False
+        try:
+            return self._cam.MV_CC_ClearImageBuffer() == 0
+        except (AttributeError, OSError):
+            return False
+
     def start_grabbing(self) -> None:
         if self._cam is None:
             raise CameraError("开始取流", -1)
