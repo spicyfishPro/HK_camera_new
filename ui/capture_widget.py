@@ -536,12 +536,12 @@ class CaptureWidget(QWidget):
     @staticmethod
     def _wrap_scroll(inner: QWidget) -> QScrollArea:
         """把控制栏包进竖向滚动区:放不下就滚动,保证所有控件/按键都能显示完整。
-        固定宽度 ~312(300 内容 + 滚动条余量),横向不滚动。"""
+        为系统字体及滚动条预留宽度，超长设备信息允许横向滚动。"""
         sa = QScrollArea()
         sa.setWidget(inner)
         sa.setWidgetResizable(True)
-        sa.setFixedWidth(314)
-        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sa.setFixedWidth(334)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         sa.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         sa.setFrameShape(QFrame.Shape.NoFrame)
         return sa
@@ -619,6 +619,8 @@ class CaptureWidget(QWidget):
         lay.addWidget(QLabel("保存路径:"), row, 0)
         self.lbl_save_dir = QLabel("(未设置)")
         self.lbl_save_dir.setWordWrap(True)
+        # Windows 路径的长片段不能成为整列的最小宽度。
+        self.lbl_save_dir.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.lbl_save_dir.setStyleSheet("color: #777; font-style: italic;")
         lay.addWidget(self.lbl_save_dir, row, 1, 1, 2)
 

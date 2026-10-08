@@ -205,8 +205,16 @@ class CaptureUiTests(unittest.TestCase):
             window.close()
 
     def test_thumbnail_labels_fit_small_window_and_collapse(self):
+        from PyQt6.QtWidgets import QScrollArea
+        self.widget.lbl_save_dir.setText(
+            r"C:\Users\RUNNER~1\AppData\Local\Temp\capture-ui-long-directory-name"
+        )
         self.widget.resize(1000, 600)
         self.assertTrue(pump(lambda: self.widget.gallery.height() >= 180))
+        self.assertTrue(pump(lambda: all(
+            area.widget().width() <= area.viewport().width()
+            for area in self.widget.findChildren(QScrollArea)
+        )))
         view = self.widget.view
         self.widget._show_preview_frame(np.zeros((800, 1000, 3), np.uint8))
         view.fit_to_window()

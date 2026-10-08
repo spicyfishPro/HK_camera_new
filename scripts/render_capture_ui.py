@@ -27,6 +27,7 @@ from test_acquisition_metadata import sample_metadata  # noqa: E402
 from core.capture_pipeline import CaptureEvent  # noqa: E402
 from core.spike_workflow import StepStatus  # noqa: E402
 from ui.style import build_dark_palette, DARK_QSS  # noqa: E402
+from PyQt6.QtWidgets import QScrollArea  # noqa: E402
 
 
 def settle(app):
@@ -123,6 +124,9 @@ def render(output: Path):
             tab.view.fit_to_window()
             tab.gallery.list.horizontalScrollBar().setValue(0)
             settle(app)
+            for area in tab.findChildren(QScrollArea):
+                if area.widget().width() > area.viewport().width():
+                    raise RuntimeError("控制栏被内容撑宽，请检查路径标签和系统字体")
             target = output / f"capture-{width}x{height}-scale{scale}.png"
             if not window.grab().save(str(target)):
                 raise RuntimeError(f"无法输出截图: {target}")
