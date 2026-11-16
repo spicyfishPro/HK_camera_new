@@ -1,4 +1,5 @@
 import tempfile
+import json
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -111,6 +112,35 @@ class SyncTests(unittest.TestCase):
             other.sync_once()
             self.assertEqual(other.outbox.summary()[0], 0)
             self.assertEqual(self.calls[-1][2][0]['capture_id'], job.metadata.capture_id)
+        finally:
+            other.close()
+
+    def test_v2_identity_survives_restart_and_account_switch(self):
+        info = tag_info(population_id=None, number='CS', name='中国春')
+        self.service.register_key('secret-a', {'id':1})
+        reporting = {**self.service.snapshot('secret-a'), **info.identity_payload(),
+                     'year':info.year, 'location':info.location}
+        meta = replace(sample_metadata(), capture_id=str(uuid4()), accession_no='CS',
+                       field_tag_code=info.code, planting=info.snapshot(),
+                       filename_prefix=info.filename_prefix,
+                       filename=info.filename_prefix + '_Rep1_front.png')
+        self.service.record(SimpleNamespace(metadata=meta, reporting=reporting))
+        reporting['planting_entry_id'] = 999
+        stored = json.loads(self.service.outbox.pending()[0][1])
+        self.assertEqual(stored['planting_entry_id'], info.planting_entry_id)
+        self.assertIsNone(stored['membership_id'])
+        self.assertIsNone(stored['planting_population_id'])
+        self.assertEqual(stored['global_material_id'], info.global_material['id'])
+        other = SyncService(self.root, transport=self.transport, start=False)
+        try:
+            other.register_key('secret-b', {'id':2})
+            other.sync_once()
+            self.assertEqual(other.outbox.summary()[0], 1)
+            other.register_key('rotated-a', {'id':1})
+            other.sync_once()
+            self.assertEqual(other.outbox.summary()[0], 0)
+            self.assertEqual(self.calls[-1][2][0], stored)
+            self.assertEqual(stored['filename'], 'CS_行1_Rep1_front.png')
         finally:
             other.close()
 
