@@ -419,7 +419,7 @@ class PhotoGallery(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 0, 4, 0)
         row = QHBoxLayout()
-        self.header = QLabel("当前材料照片 — 开始采集后显示")
+        self.header = QLabel("当前田间行照片 — 开始采集后显示")
         row.addWidget(self.header, 1)
         self.locate = QPushButton("定位当前")
         self.refresh = QPushButton("刷新")

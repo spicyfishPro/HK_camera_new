@@ -1401,7 +1401,7 @@ class CaptureWidget(QWidget):
             return
         prefix = wf.prefix if active else self.le_prefix.text().strip()
         if not prefix:
-            self._err("请输入文件名前缀")
+            self._err("请先扫码或输入挂牌号并联网核验")
             return
         if self._save_dir is None and not self._prompt_save_dir():
             return
@@ -1428,7 +1428,7 @@ class CaptureWidget(QWidget):
             raw_path = path.with_stem(path.stem + "_raw") if (
                 self.correction.enabled and self.cb_save_raw.isChecked()) else None
             if max(len(str(p).encode('utf-16-le')) // 2 for p in (path, raw_path) if p) > 240:
-                raise StorageError('照片完整路径过长，请使用更短的保存目录或材料编号')
+                raise StorageError('照片完整路径过长，请选择更短的保存根目录')
             correction = self.correction.snapshot()
             h,w = template_frame.bgr.shape[:2]
             if self._rotation_deg in (90,270):
@@ -1775,7 +1775,7 @@ class CaptureWidget(QWidget):
 
     def _prompt_save_dir(self) -> bool:
         start = str(self._save_root or self._save_dir or '')
-        d = QFileDialog.getExistingDirectory(self, "选择保存目录（扫码模式将自动创建群体子目录）", start)
+        d = QFileDialog.getExistingDirectory(self, "选择种植表保存根目录（自动创建群体子目录）", start)
         if not d:
             return False
         self._save_root = Path(d)

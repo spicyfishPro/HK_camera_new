@@ -165,27 +165,25 @@ class SpikePanel(QGroupBox):
 
         # 总 Rep + 起点(前缀复用 CaptureWidget 的"文件名前缀")
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("总Rep:"))
+        row2.addWidget(QLabel("采样 Rep："))
         self.sp_total = QSpinBox()
-        self.sp_total.setRange(1, self._MAX_REPS)
+        self.sp_total.setRange(self._default_reps, self._default_reps)
         self.sp_total.setValue(self._default_reps)
         self.sp_total.setFixedWidth(56)
         row2.addWidget(self.sp_total)
-        row2.addSpacing(6)
-        row2.addWidget(QLabel("起点 R"))
-        self.sp_start_rep = QSpinBox()
-        self.sp_start_rep.setRange(1, self._MAX_REPS)
+        self.sp_start_rep = QSpinBox(self)
+        self.sp_start_rep.setRange(1, 1)
         self.sp_start_rep.setValue(1)
         self.sp_start_rep.setFixedWidth(56)
-        row2.addWidget(self.sp_start_rep)
+        self.sp_start_rep.hide()
         # 多相位(麦穗)才有"正/侧"起点选择;籽粒隐藏
         self.cb_start_side: Optional[QComboBox] = None
         if not self._single_side:
-            self.cb_start_side = QComboBox()
+            self.cb_start_side = QComboBox(self)
             for key, zh in self._side_zh.items():
                 self.cb_start_side.addItem(zh, key)
             self.cb_start_side.setFixedWidth(56)
-            row2.addWidget(self.cb_start_side)
+            self.cb_start_side.hide()
         row2.addStretch(1)
         root.addLayout(row2)
 
@@ -235,9 +233,7 @@ class SpikePanel(QGroupBox):
         self.btn_reset.clicked.connect(self._on_reset_clicked)
 
     def _on_total_changed(self, v: int) -> None:
-        if self.sp_start_rep.value() > v:
-            self.sp_start_rep.setValue(v)
-        self.sp_start_rep.setMaximum(v)
+        self.sp_start_rep.setRange(1, 1)
 
     # ---------------- 启动 / 重置 ----------------
 
@@ -245,22 +241,19 @@ class SpikePanel(QGroupBox):
         """使用已确定的品种前缀真正启动现有工作流。"""
         if not prefix or not prefix.strip():
             QMessageBox.warning(self, self.title(),
-                                "请先在「文件名前缀」中输入品种前缀")
+                                "请先扫码或输入挂牌号并联网核验")
             return False
         if self._precheck is not None:
             ok, reason = self._precheck()
             if not ok:
                 QMessageBox.warning(self, self.title(), reason or "未就绪,已取消开始")
                 return False
-        start_side = (
-            self._side_keys[0] if self._single_side
-            else self.cb_start_side.currentData()
-        )
+        start_side = self._side_keys[0]
         try:
             self.workflow.start(
                 prefix=prefix,
-                total=self.sp_total.value(),
-                start_rep=self.sp_start_rep.value(),
+                total=self._default_reps,
+                start_rep=1,
                 start_side=start_side,
                 sides=self._side_keys,
             )
@@ -271,14 +264,16 @@ class SpikePanel(QGroupBox):
         if self._disk_checker is not None:
             self.workflow.resume_from_disk(self._disk_checker)
             if self.workflow.is_complete():
-                self.workflow.reset()
-                self._clear_grid()
-                self._show_collision(
-                    "⛔ 当前田间行已有完整照片，请核对后选择下一挂牌。",
-                    ok=False,
-                )
-                self.workflow_state_changed.emit(False)
-                return False
+                answer = QMessageBox.question(self, "本行已完成",
+                    "当前田间行已有完整照片。是否进入重拍？\n重拍会替换所选位置的照片，不增加完成位置数。",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No)
+                if answer != QMessageBox.StandardButton.Yes:
+                    self.workflow.reset()
+                    self._clear_grid()
+                    self.workflow_state_changed.emit(False)
+                    return False
+                self.workflow.jump_to(1, self._side_keys[0])
 
         self._rebuild_grid()
         self.workflow_state_changed.emit(True)
@@ -467,10 +462,10 @@ class SpikePanel(QGroupBox):
             self.workflow.reevaluate_disk(self._disk_checker)
 
         configurable = not active and not self._start_busy
-        self.sp_total.setEnabled(configurable)
-        self.sp_start_rep.setEnabled(configurable)
+        self.sp_total.setEnabled(False)
+        self.sp_start_rep.setEnabled(False)
         if self.cb_start_side is not None:
-            self.cb_start_side.setEnabled(configurable)
+            self.cb_start_side.setEnabled(False)
         self.btn_start.setEnabled(configurable)
         self.btn_reset.setEnabled(active and not self._capture_busy)
 
@@ -481,7 +476,7 @@ class SpikePanel(QGroupBox):
 
         cur = self.workflow.current_step()
         if cur is None and not self.workflow.active:
-            self.lbl_current.setText("尚未启动 — 输入品种前缀和总 Rep,点[开始]")
+            self.lbl_current.setText("尚未启动 — 扫码或输入挂牌号，核验后开始")
             self.lbl_current.setStyleSheet("color: #aaa; font-size: 11px;")
         elif self.workflow.is_complete():
             self.lbl_current.setText(

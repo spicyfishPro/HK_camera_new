@@ -254,7 +254,7 @@ class SpikeWorkflow:
         if not self._active:
             raise RuntimeError("工作流未启动")
         idx = _step_index(rep, side, self._total, self._sides)
-        if idx == self._cur:
+        if idx == self._cur and self._steps[idx].status in (StepStatus.CURRENT, StepStatus.FAILED):
             return
         cur = self._steps[self._cur]
         # 原当前格(CURRENT 或失败 FAILED)都回退,交给 reevaluate_disk 判灰/绿,

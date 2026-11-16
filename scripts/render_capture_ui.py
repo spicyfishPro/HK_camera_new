@@ -53,6 +53,8 @@ def render(output: Path):
         tab._qr_info = tag_info(number="RIL245", row="668", group="ND3097×LX987", name="界面验证材料")
         tab._active_field_tag_code = "P1"
         tab.le_prefix.setText("P1")
+        tab.sp_planting_year.setValue(2026)
+        tab.cb_planting_location.setEditText('鸡泽')
         tab.lbl_planting_info.setText("2026 · 鸡泽 · ND3097×LX987\n当前编号 RIL245 · 界面验证材料\n第 668 行 · 挂牌 P1")
         wf = tab.spike_panel.workflow
         wf.start("RIL245_行668", 5)

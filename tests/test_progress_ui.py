@@ -94,6 +94,27 @@ class ProgressUiTests(unittest.TestCase):
             self.assertFalse(self.widget.spike_panel.start_with_prefix('RIL8'))
         self.assertIsNone(self.widget._report_context)
 
+    def test_required_positions_cannot_be_shortened_and_complete_row_can_retake(self):
+        from PyQt6.QtWidgets import QMessageBox
+        panel = self.widget.spike_panel
+        panel.sp_total.setValue(1)
+        panel.sp_start_rep.setValue(4)
+        self.qr(1, '群体甲', 'RIL8')
+        self.assertEqual(panel.workflow.total, 5)
+        self.assertEqual(len(panel.workflow.steps()), 10)
+        self.assertEqual(panel.workflow.current_step().rep, 1)
+        self.assertFalse(panel.sp_total.isEnabled())
+        folder = self.widget._save_dir
+        for rep in range(1, 6):
+            for side in ('front', 'side'):
+                (folder / f'RIL8_行1_Rep{rep}_{side}.png').touch()
+        self.reset()
+        with patch('ui.spike_panel.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes):
+            self.qr(1, '群体甲', 'RIL8')
+        self.assertTrue(panel.workflow.active)
+        self.assertFalse(panel.workflow.is_complete())
+        self.assertEqual((panel.workflow.current_step().rep, panel.workflow.current_step().side), (1, 'front'))
+
     def test_retry_registers_key_without_new_capture(self):
         self.widget._retry_progress_sync()
         self.assertIn('secret-a', self.service.keys.values())
