@@ -11,13 +11,15 @@ from PyQt6.QtWidgets import QMainWindow, QTabWidget, QLabel, QStatusBar
 from .capture_widget import CaptureWidget
 from core.capture_pipeline import CapturePipeline
 from core.camera import CameraError
+from core.paths import ROOT_USER
+from core.progress_sync import SyncService
 
 log = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
     capture_event = pyqtSignal(object)
-    def __init__(self):
+    def __init__(self, *, reporter=None):
         super().__init__()
         self.setWindowTitle("RGB Capture")
         # 自适应屏幕:取可用区域的 90%(上限 1600×900),不超过屏幕,居中。
@@ -26,9 +28,10 @@ class MainWindow(QMainWindow):
         self._fit_to_screen()
 
         self.tabs = QTabWidget()
-        self.pipeline = CapturePipeline(self.capture_event.emit)
-        self.wheat_tab = CaptureWidget(mode="wheat", pipeline=self.pipeline)
-        self.grain_tab = CaptureWidget(mode="grain", pipeline=self.pipeline)
+        self.reporter = reporter if reporter is not None else SyncService(ROOT_USER / 'capture-progress')
+        self.pipeline = CapturePipeline(self.capture_event.emit, primary_saved=self.reporter.record)
+        self.wheat_tab = CaptureWidget(mode="wheat", pipeline=self.pipeline, reporter=self.reporter)
+        self.grain_tab = CaptureWidget(mode="grain", pipeline=self.pipeline, reporter=self.reporter)
         self.capture_event.connect(self.wheat_tab._on_pipeline_event)
         self.capture_event.connect(self.grain_tab._on_pipeline_event)
         self._close_timer = QTimer(self)
@@ -184,6 +187,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         self._cancel_auto_connect()
+        if self.reporter.failed_local:
+            event.ignore()
+            self._close_timer.stop()
+            self.set_right_status('统计队列写入失败；请检查磁盘并重试同步后关闭，照片已保存')
+            try:
+                self.reporter.retry()
+            except Exception:
+                # 磁盘仍不可写时保留窗口和内存记录，不能让 Qt 回调异常退出。
+                pass
+            return
         if self.pipeline.pending_count:
             event.ignore()
             self.pipeline.begin_drain()
@@ -197,6 +210,7 @@ class MainWindow(QMainWindow):
             self.wheat_tab.shutdown()
             self.grain_tab.shutdown()
             self.pipeline.shutdown()
+            self.reporter.close()
         except Exception:
             log.exception("close shutdown error")
         super().closeEvent(event)

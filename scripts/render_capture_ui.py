@@ -23,6 +23,7 @@ else:
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 from test_qr_ui import QApplication, MainWindow, _FakeScorer  # noqa: E402
+from capture_fixtures import tag_info
 from test_acquisition_metadata import sample_metadata  # noqa: E402
 from core.capture_pipeline import CaptureEvent  # noqa: E402
 from core.spike_workflow import StepStatus  # noqa: E402
@@ -49,9 +50,12 @@ def render(output: Path):
         tab.camera.is_connected = lambda: True
         tab._save_dir = Path(directory)
         tab.lbl_save_dir.setText(directory)
-        tab.le_prefix.setText("RIL245")
+        tab._qr_info = tag_info(number="RIL245", row="668", group="ND3097×LX987", name="界面验证材料")
+        tab._active_field_tag_code = "P1"
+        tab.le_prefix.setText("P1")
+        tab.lbl_planting_info.setText("2026 · 鸡泽 · ND3097×LX987\n当前编号 RIL245 · 界面验证材料\n第 668 行 · 挂牌 P1")
         wf = tab.spike_panel.workflow
-        wf.start("RIL245", 5)
+        wf.start("RIL245_行668", 5)
         tab.spike_panel._rebuild_grid()
         tab._sync_gallery_context()
         tab.lbl_model.setText("设备型号：界面验证用模拟相机")
@@ -83,12 +87,14 @@ def render(output: Path):
             cv2.putText(
                 image, side, (65, 205), cv2.FONT_HERSHEY_SIMPLEX, 1, (180, 180, 180), 2
             )
-            path = Path(directory) / f"RIL245_Rep{rep}_{side}.png"
+            path = Path(directory) / f"RIL245_行668_Rep{rep}_{side}.png"
             cv2.imencode(".png", image)[1].tofile(str(path))
             meta = replace(
                 sample_metadata(),
                 capture_id=str(n),
                 accession_no="RIL245",
+                filename_prefix="RIL245_行668",
+                planting=tab._qr_info.snapshot(),
                 rep=rep,
                 side=side,
                 filename=path.name,

@@ -274,7 +274,7 @@ class SpikePanel(QGroupBox):
                 self.workflow.reset()
                 self._clear_grid()
                 self._show_collision(
-                    "⛔ 当前文件夹已含此前缀的完整照片,请审核或修改前缀后再开始。",
+                    "⛔ 当前田间行已有完整照片，请核对后选择下一挂牌。",
                     ok=False,
                 )
                 self.workflow_state_changed.emit(False)

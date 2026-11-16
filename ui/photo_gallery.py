@@ -400,6 +400,7 @@ class PhotoGallery(QWidget):
         super().__init__(parent)
         self.pipeline = pipeline
         self.prefix = ""
+        self.planting_entry_id = None
         self.folder = None
         self.mode = "wheat"
         self.ext = "png"
@@ -472,17 +473,17 @@ class PhotoGallery(QWidget):
             16777215 if not collapsed else self.header.sizeHint().height() + 18
         )
 
-    def set_context(self, folder, prefix, mode, total=0, ext="png"):
+    def set_context(self, folder, prefix, mode, total=0, ext="png", *, planting_entry_id=None):
         if not prefix or folder is None:
             return  # 完成后的自动清空前缀保留刚拍完的照片。
-        context = (Path(folder), prefix, mode)
+        context = (Path(folder), prefix, mode, planting_entry_id)
         if (
-            context == (self.folder, self.prefix, self.mode)
+            context == (self.folder, self.prefix, self.mode, self.planting_entry_id)
             and total == self.total
             and ext.lower() == self.ext
         ):
             return
-        if context != (self.folder, self.prefix, self.mode):
+        if context != (self.folder, self.prefix, self.mode, self.planting_entry_id):
             self.generation += 1
             self.entries.clear()
             self.cache.clear()
@@ -493,7 +494,7 @@ class PhotoGallery(QWidget):
             self.viewer.item.setPixmap(QPixmap())
             self._follow = True
             self._complete = False
-            self.folder, self.prefix, self.mode = context
+            self.folder, self.prefix, self.mode, self.planting_entry_id = context
         self.total, self.ext = total, ext.lower()
         self.rebuild()
         self.scan()
@@ -572,7 +573,7 @@ class PhotoGallery(QWidget):
             e.state in ("failed", "capture_failed") for e in self.entries.values()
         )
         self.header.setText(
-            f"{'已完成材料' if self._complete else '材料'}：{self.prefix or '—'}    "
+            f"{'已完成田间行' if self._complete else '田间行'}：{self.prefix or '—'}    "
             f"已保存 {counts['saved'] + counts['history']}    待保存 {pending}    失败 {failed}"
         )
         self.retry.setEnabled(any(e.state == "failed" for e in self.entries.values()))
@@ -580,7 +581,8 @@ class PhotoGallery(QWidget):
     def update_event(self, event: CaptureEvent):
         if (
             self.folder != event.path.parent
-            or self.prefix != event.metadata.accession_no
+            or self.prefix != (event.metadata.filename_prefix or event.metadata.accession_no)
+            or (self.planting_entry_id is not None and (event.metadata.planting or {}).get("planting_entry_id") != self.planting_entry_id)
         ):
             return
         # 同路径历史项/旧重拍项不再重复计数，当前尝试拥有该位置。

@@ -159,3 +159,36 @@ class ResponseAndFilenameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlantingIdentityParsingTests(unittest.TestCase):
+    def test_current_fields_override_legacy_and_ungrouped_is_valid(self):
+        import json
+        from capture_fixtures import tag_payload
+        from core.field_tag_lookup import parse_field_tag_response
+        data = tag_payload(number='RIL8', name='')
+        info = parse_field_tag_response(json.dumps(data))
+        self.assertEqual(info.accession_no, 'RIL8')
+        self.assertEqual(info.planting_population['name'], '群体甲')
+        self.assertEqual(info.global_material['name'], '')
+        self.assertEqual(info.filename_prefix, 'RIL8_行1')
+        data = tag_payload(population_id=None, number='CS', name='中国春')
+        info = parse_field_tag_response(json.dumps(data))
+        self.assertIsNone(info.planting_population)
+        self.assertIsNone(info.membership)
+        self.assertEqual(info.filename_prefix, 'CS_行1')
+        for key in ('global_material', 'membership', 'planting_population', 'section', 'planting_entry_id'):
+            bad = dict(data); bad.pop(key)
+            with self.subTest(key=key), self.assertRaises(FieldTagError):
+                parse_field_tag_response(json.dumps(bad))
+
+    def test_conflicting_membership_and_inactive_master_rejected(self):
+        import json
+        from capture_fixtures import tag_payload
+        from core.field_tag_lookup import parse_field_tag_response
+        data = tag_payload(); data['membership']['population_id'] = 2
+        with self.assertRaises(FieldTagError):
+            parse_field_tag_response(json.dumps(data))
+        data = tag_payload(); data['global_material']['is_active'] = False
+        with self.assertRaises(FieldTagError):
+            parse_field_tag_response(json.dumps(data))

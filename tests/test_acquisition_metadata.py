@@ -111,7 +111,7 @@ class MetadataSchemaTests(unittest.TestCase):
     def test_xmp_roundtrip_and_sensitive_field_whitelist(self):
         metadata = sample_metadata()
         payload = xmp_json(metadata.to_xmp_bytes())
-        self.assertEqual(payload["schema_version"], "wheat.capture.v1")
+        self.assertEqual(payload["schema_version"], "wheat.capture.v2")
         self.assertEqual(payload["sample"]["accession_no"], "材料<&")
         self.assertEqual(payload["sample"]["field_tag_code"], "PABC123")
         self.assertEqual(

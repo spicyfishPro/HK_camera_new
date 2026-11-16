@@ -2,6 +2,12 @@
 
 面向海康工业相机的 Windows 图像采集软件。应用使用 Python 3.12、PyQt6、OpenCV 和 PyInstaller，正式运行时需要安装海康 MVS Runtime。
 
+## 拍照进度（2.4）
+
+支持种植年份、地点维度的拍照进度上报、离线补传，以及扫码自动创建
+`群体名称_麦穗或籽粒_拍摄人` 子目录。首次启用需要新空目录，平台须先升级。
+详见 [使用说明](docs/capture-progress.md)。
+
 ## 许可证与公开分发状态
 
 本项目原创代码采用 [GPL-3.0-only](LICENSE)。海康绑定、BRISQUE 模型和依赖保留各自
@@ -21,6 +27,10 @@ python -m unittest discover -s tests -v
 
 这些测试覆盖纯逻辑和无相机 UI 行为，不代替真实 Windows 设备、MVS DLL、相机取流及保存性能验收。
 
+## 2.5 逐田间行采集
+
+扫码和手输挂牌共用当前种植身份；照片按本次群体保存，以“当前成员号_行号_Rep_视角”命名。无群体材料受支持，CK不采集；同一材料不同田间行独立续拍和统计。升级时使用新的空照片根目录，保留旧队列和照片。详见 [采集说明](docs/capture-progress.md)。
+
 ## 构建与发布
 
 以下说明现有技术流程；对外发布前需先满足上述第三方授权与对应源码提供条件。
@@ -28,8 +38,8 @@ python -m unittest discover -s tests -v
 应用版本定义在 `core/build_info.py` 的 `APP_VERSION`。发布前应先更新版本号，然后创建与之匹配的标签：
 
 ```powershell
-git tag v2.3
-git push origin v2.3
+git tag v2.5
+git push origin v2.5
 ```
 
 `Build and release` 工作流会在 Windows Runner 上重新运行测试，随后使用 `build.spec` 生成 onedir 包，并发布以下 Release 附件：

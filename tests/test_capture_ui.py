@@ -16,6 +16,7 @@ from test_qr_ui import QT_AVAILABLE, QApplication, CaptureWidget, _FakeScorer
 from test_acquisition_metadata import sample_metadata, sample_frame
 from core.acquisition_metadata import FrameSnapshot, SaveResult
 from core.capture_pipeline import CaptureEvent
+from capture_fixtures import tag_info
 
 
 def pump(predicate, timeout=4):
@@ -51,8 +52,10 @@ class CaptureUiTests(unittest.TestCase):
         self.widget.camera.is_connected = lambda: True
         self.widget.camera.device = None
         self.widget._err = Mock()
-        self.widget.le_prefix.setText("A")
-        self.widget.spike_panel.workflow.start("A", 1)
+        self.widget._qr_info = tag_info(number="A")
+        self.widget._active_field_tag_code = "P1"
+        self.widget.le_prefix.setText("P1")
+        self.widget.spike_panel.workflow.start("A_行1", 1)
         self.widget.spike_panel._rebuild_grid()
         self.widget._sync_gallery_context()
         self.widget.resize(1100, 700)
@@ -124,14 +127,14 @@ class CaptureUiTests(unittest.TestCase):
         self.assertTrue(pump(lambda: self.widget.pipeline.pending_count == 0))
         self.assertTrue(pump(lambda: self.widget.spike_panel.workflow.is_complete()))
         self.assertCountEqual(
-            saved, [("A_Rep1_front.png", 1, 1), ("A_Rep1_side.png", 2, 2)]
+            saved, [("A_行1_Rep1_front.png", 1, 1), ("A_行1_Rep1_side.png", 2, 2)]
         )
         self.assertEqual(self.widget._append_capture_log.call_count, 2)
 
     def test_history_context_and_corrupt_file(self):
-        (self.folder / "A_Rep1_front.png").write_bytes(b"bad png")
+        (self.folder / "A_行1_Rep1_front.png").write_bytes(b"bad png")
         cv2.imwrite(
-            str(self.folder / "A_Rep1_side.png"), np.ones((20, 30, 3), np.uint8)
+            str(self.folder / "A_行1_Rep1_side.png"), np.ones((20, 30, 3), np.uint8)
         )
         cv2.imwrite(
             str(self.folder / "A1_Rep1_front.png"), np.ones((20, 30, 3), np.uint8)
@@ -154,7 +157,7 @@ class CaptureUiTests(unittest.TestCase):
 
     def test_retake_old_failure_remains_retryable_and_latest_is_primary(self):
         g = self.widget.gallery
-        meta = replace(sample_metadata(), accession_no="A", capture_id="old")
+        meta = replace(sample_metadata(), accession_no="A", filename_prefix="A_行1", planting={"planting_entry_id":1}, capture_id="old")
 
         def event(id, state):
             return CaptureEvent(
@@ -163,7 +166,7 @@ class CaptureUiTests(unittest.TestCase):
                 "s",
                 1,
                 replace(meta, capture_id=id),
-                self.folder / "A_Rep1_front.png",
+                self.folder / "A_行1_Rep1_front.png",
                 None,
                 state,
             )

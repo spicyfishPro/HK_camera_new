@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import sqlite3
 import sys
 import threading
 import time
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core import naming, wb_config
+from core.capture_storage import prepare_row_storage, StorageError
 from core.acquisition_metadata import (
     CaptureMetadata,
     FrameSnapshot,
@@ -42,7 +44,8 @@ from core.field_tag_lookup import (
     FieldTagError,
     build_field_tag_api_url,
     detect_field_tag_qr,
-    parse_accession_response,
+    normalize_field_tag_code,
+    parse_field_tag_response,
 )
 from core.paths import CALIB_DIR as _CALIB_DIR, LOGS_DIR as _LOG_DIR, CAPTURE_LOG as _CAPTURE_LOG
 from core.quality import BRISQUEScorer, DEFAULT_THRESHOLD
@@ -364,9 +367,15 @@ class CaptureWidget(QWidget):
 
     _pipeline_event = pyqtSignal(object)
 
-    def __init__(self, mode: Mode, parent=None, pipeline=None):
+    def __init__(self, mode: Mode, parent=None, pipeline=None, reporter=None):
         super().__init__(parent)
         self.mode: Mode = mode
+        self.reporter = reporter
+        self._save_root: Optional[Path] = None
+        self._report_context = None
+        self._qr_info = None
+        self._deferred_bearer_key = None
+        self._last_context_options = None
         self.camera = HikCamera()
         self._stream: Optional[StreamWorker] = None
         self._save_dir: Optional[Path] = None
@@ -374,7 +383,8 @@ class CaptureWidget(QWidget):
         self._rotation_deg: int = 180
         self._owner = uuid4().hex
         self._owns_pipeline = pipeline is None
-        self.pipeline = pipeline or CapturePipeline(self._pipeline_event.emit)
+        self.pipeline = pipeline or CapturePipeline(self._pipeline_event.emit,
+                                                   primary_saved=reporter.record if reporter else None)
         self._pipeline_event.connect(self._on_pipeline_event)
         self._capture_attempts = {}
         self._preparing_id = None
@@ -386,6 +396,7 @@ class CaptureWidget(QWidget):
         self._latest_preview_bgr: Optional[np.ndarray] = None
         self._prefix_source: Literal["manual", "qr"] = "manual"
         self._active_field_tag_code: Optional[str] = None
+        self._row_storage = None
         self._qr_request_code: Optional[str] = None
         self._qr_request_id: int = 0
         self._qr_request_pending: bool = False
@@ -438,6 +449,10 @@ class CaptureWidget(QWidget):
         self._refresh_ffc_status()
         self._refresh_wb_preset_label()
         self._update_prefix_source_controls()
+        self._sync_status_timer = QTimer(self)
+        self._sync_status_timer.setInterval(1000)
+        self._sync_status_timer.timeout.connect(self._refresh_sync_status)
+        self._sync_status_timer.start()
 
     # ============================== UI ==============================
 
@@ -559,16 +574,16 @@ class CaptureWidget(QWidget):
         return gb
 
     def _build_filename_group(self) -> QGroupBox:
-        gb = QGroupBox("文件名设置")
+        gb = QGroupBox("田间行采集")
         lay = QGridLayout(gb)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setVerticalSpacing(6)
 
         row = 0
-        lay.addWidget(QLabel("品种名来源:"), row, 0, 1, 3)
+        lay.addWidget(QLabel("挂牌来源:"), row, 0, 1, 3)
         source_buttons = QHBoxLayout()
         source_buttons.setSpacing(4)
-        self.btn_prefix_manual = QPushButton("手动输入品种名")
+        self.btn_prefix_manual = QPushButton("手输挂牌号")
         self.btn_prefix_qr = QPushButton("识别标签二维码")
         self.btn_prefix_manual.setCheckable(True)
         self.btn_prefix_qr.setCheckable(True)
@@ -592,10 +607,15 @@ class CaptureWidget(QWidget):
 
         row += 1
         # 麦穗/籽粒都用工作流接管命名,前缀统一叫"品种前缀"
-        lay.addWidget(QLabel("品种前缀:"), row, 0)
+        lay.addWidget(QLabel("挂牌编号:"), row, 0)
         self.le_prefix = QLineEdit()
-        self.le_prefix.setPlaceholderText("如 SX001")
+        self.le_prefix.setPlaceholderText("如 PCJ1")
         lay.addWidget(self.le_prefix, row, 1, 1, 2)
+        row += 1
+        self.lbl_planting_info = QLabel("请扫码或输入挂牌号，联网确认田间行后开始。")
+        self.lbl_planting_info.setWordWrap(True)
+        self.lbl_planting_info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay.addWidget(self.lbl_planting_info, row, 0, 1, 3)
 
         row += 1
         self.lbl_bearer_key = QLabel("Bearer 密钥:")
@@ -604,8 +624,35 @@ class CaptureWidget(QWidget):
         self.le_bearer_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.le_bearer_key.setPlaceholderText("仅保存在本次运行内存中")
         lay.addWidget(self.le_bearer_key, row, 1, 1, 2)
-        self.lbl_bearer_key.hide()
-        self.le_bearer_key.hide()
+        row += 1
+        lay.addWidget(QLabel("种植年份 / 地点:"), row, 0, 1, 3)
+        row += 1
+        self.sp_planting_year = QSpinBox()
+        self.sp_planting_year.setRange(1900, 2200)
+        self.sp_planting_year.setValue(datetime.now().year)
+        self.cb_planting_location = QComboBox()
+        self.cb_planting_location.setEditable(True)
+        self.cb_planting_location.setMinimumContentsLength(5)
+        self.cb_planting_location.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        source_fields = QHBoxLayout()
+        source_fields.addWidget(self.sp_planting_year)
+        source_fields.addWidget(self.cb_planting_location, stretch=1)
+        lay.addLayout(source_fields, row, 0, 1, 3)
+        if self.reporter:
+            recent = self.reporter.outbox.get('scope_' + self.mode, {})
+            self.sp_planting_year.setValue(recent.get('year', datetime.now().year))
+            self.cb_planting_location.setEditText(recent.get('location', ''))
+        self.sp_planting_year.valueChanged.connect(self._refresh_source_options)
+        row += 1
+        self.lbl_sync = QLabel("拍照统计：准备就绪")
+        self.lbl_sync.setWordWrap(True)
+        self.lbl_sync.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay.addWidget(self.lbl_sync, row, 0, 1, 3)
+        row += 1
+        self.btn_sync_retry = QPushButton("重试同步")
+        self.btn_sync_retry.clicked.connect(self._retry_progress_sync)
+        self.le_bearer_key.editingFinished.connect(self._register_progress_key)
+        lay.addWidget(self.btn_sync_retry, row, 1, 1, 2)
 
         # 重复序号和"正/侧"由工作流接管,这里不再展示;两者均为 None
         self.sp_repeat = None  # type: ignore
@@ -996,8 +1043,14 @@ class CaptureWidget(QWidget):
 
     def set_bearer_key(self, value: str) -> None:
         """由另一个页签同步 Bearer 密钥；阻断信号以避免回发循环。"""
+        if self.spike_panel is not None and self.spike_panel.workflow.active:
+            self._deferred_bearer_key = value
+            return
         if value == self.le_bearer_key.text():
             return
+        if self._qr_request_pending:
+            self._invalidate_qr_request()
+            self.view.show_warning("密钥已变更，请重新识别挂牌二维码", 5000)
         blocked = self.le_bearer_key.blockSignals(True)
         try:
             self.le_bearer_key.setText(value)
@@ -1009,7 +1062,10 @@ class CaptureWidget(QWidget):
             return
         changed = source != self._prefix_source
         self._prefix_source = source
-        if source == "manual":
+        if changed:
+            self._qr_info = None
+            self._row_storage = None
+            self._report_context = None
             self._active_field_tag_code = None
             self._qr_request_code = None
             self.view.clear_qr_outline()
@@ -1024,9 +1080,11 @@ class CaptureWidget(QWidget):
         self.btn_prefix_manual.setEnabled(not locked)
         self.btn_prefix_qr.setEnabled(not locked)
         self.le_prefix.setEnabled(not locked and not qr_mode)
-        self.lbl_bearer_key.setVisible(qr_mode)
-        self.le_bearer_key.setVisible(qr_mode)
-        self.le_bearer_key.setEnabled(qr_mode and not locked)
+        self.lbl_bearer_key.setVisible(True)
+        self.le_bearer_key.setVisible(True)
+        self.le_bearer_key.setEnabled(not locked)
+        self.sp_planting_year.setEnabled(False)
+        self.cb_planting_location.setEnabled(False)
 
     def _set_qr_request_pending(self, pending: bool) -> None:
         self._qr_request_pending = bool(pending)
@@ -1293,7 +1351,8 @@ class CaptureWidget(QWidget):
         prefix = wf.prefix if wf and wf.active else self.le_prefix.text().strip()
         total = wf.total if wf and wf.active else 0
         self.gallery.set_context(self._save_dir, prefix, self.mode, total,
-                                 self.cb_format.currentText())
+                                 self.cb_format.currentText(),
+                                 planting_entry_id=self._qr_info.planting_entry_id if self._qr_info else None)
 
     def _refresh_capture_capacity(self) -> None:
         if self._shutting_down:
@@ -1301,7 +1360,7 @@ class CaptureWidget(QWidget):
         can_take = self.pipeline.can_accept(self._estimated_capture_bytes())
         panel = self.spike_panel
         wf = panel.workflow if panel else None
-        has_step = not (wf and wf.active) or wf.current_step() is not None
+        has_step = bool(wf and wf.active and self._qr_info and self._active_field_tag_code and wf.current_step() is not None)
         self.btn_snap.setEnabled(self.camera.is_connected() and not self._snap_in_flight
                                  and not self._closing and can_take and has_step)
         self.btn_snap.setText("抓拍" if can_take else "保存失败，请重试" if self.pipeline.has_failures
@@ -1317,8 +1376,8 @@ class CaptureWidget(QWidget):
         if self._stream:
             self._stream.set_saving(self.pipeline.pending_count > 0)
         # 固定一轮的保存位置和格式，防止断点续拍检查与在途任务不一致。
-        self.btn_choose_dir.setEnabled(not pending)
-        self.cb_format.setEnabled(not pending)
+        self.btn_choose_dir.setEnabled(not pending and not (wf and wf.active))
+        self.cb_format.setEnabled(not pending and not (wf and wf.active))
 
     def snap(self) -> None:
         click_t0 = time.perf_counter()
@@ -1334,6 +1393,9 @@ class CaptureWidget(QWidget):
         panel = self.spike_panel
         wf = panel.workflow if panel else None
         active = bool(wf and wf.active)
+        if not active or self._qr_info is None or self._active_field_tag_code != self._qr_info.code:
+            self._err("请先扫码或输入挂牌号，确认田间行并开始采集")
+            return
         step = wf.current_step() if active else None
         if active and step is None:
             return
@@ -1365,6 +1427,8 @@ class CaptureWidget(QWidget):
                 overwrite = False
             raw_path = path.with_stem(path.stem + "_raw") if (
                 self.correction.enabled and self.cb_save_raw.isChecked()) else None
+            if max(len(str(p).encode('utf-16-le')) // 2 for p in (path, raw_path) if p) > 240:
+                raise StorageError('照片完整路径过长，请使用更短的保存目录或材料编号')
             correction = self.correction.snapshot()
             h,w = template_frame.bgr.shape[:2]
             if self._rotation_deg in (90,270):
@@ -1382,7 +1446,7 @@ class CaptureWidget(QWidget):
             job = CaptureJob(metadata,self._owner,session,attempt,path,raw_path,
                              get_frame,correction,self.brisque if self._brisque_ok else None,
                              self._brisque_threshold,self._estimated_capture_bytes(),overwrite,
-                             submitted_at=click_t0)
+                             submitted_at=click_t0, reporting=dict(self._report_context) if self._report_context else None)
             self._sync_gallery_context()
             if not self.pipeline.submit(job):
                 raise RuntimeError("保存队列已满或文件名已被占用，请稍候再拍")
@@ -1594,12 +1658,11 @@ class CaptureWidget(QWidget):
         return CaptureMetadata(
             capture_id=CaptureMetadata.new_capture_id(),
             captured_at=frame_snapshot.metadata.received_at,
-            accession_no=prefix,
+            accession_no=self._qr_info.accession_no,
             prefix_source=self._prefix_source,
-            field_tag_code=(
-                self._active_field_tag_code
-                if self._prefix_source == "qr" else None
-            ),
+            field_tag_code=self._active_field_tag_code,
+            planting=self._qr_info.snapshot(),
+            filename_prefix=prefix,
             mode=self.mode,
             workflow_active=workflow_active,
             rep=rep,
@@ -1639,32 +1702,85 @@ class CaptureWidget(QWidget):
             output_height=output_height,
         )
 
+    def _register_progress_key(self):
+        if self.reporter:
+            self.reporter.register_key(self.le_bearer_key.text())
+
+    def _retry_progress_sync(self):
+        if self.reporter:
+            self._register_progress_key()
+            try:
+                self.reporter.retry()
+            except Exception:
+                self.lbl_sync.setText('无法写入统计队列，请检查磁盘空间与目录权限')
+
+    def _refresh_source_options(self, *_):
+        if not self.reporter:
+            return
+        current = self.cb_planting_location.currentText()
+        options = sorted({x['location'] for x in self.reporter.contexts
+                          if x.get('year') == self.sp_planting_year.value()
+                          and isinstance(x.get('location'), str)})
+        self.cb_planting_location.clear()
+        self.cb_planting_location.addItems(options)
+        self.cb_planting_location.setEditText(current)
+
+    def _refresh_sync_status(self):
+        if not self.reporter:
+            return
+        try:
+            count, rejected = self.reporter.outbox.summary()
+            error = self.reporter.error or rejected
+            self.lbl_sync.setText(f"待同步 {count} 条；最近成功 {self.reporter.last_success or '—'}"
+                                  + (f"\n{error}" if error else ''))
+            self.lbl_sync.setToolTip(error)
+            if self.reporter.contexts != self._last_context_options:
+                self._last_context_options = list(self.reporter.contexts)
+                self._refresh_source_options()
+        except Exception:
+            self.lbl_sync.setText('无法读取统计队列，请检查磁盘；照片保存独立运行')
+
+    def _prepare_reporting_context(self):
+        info = self._qr_info
+        if info is None or info.code != self._active_field_tag_code:
+            raise StorageError('请先扫码或输入挂牌号并联网确认田间行')
+        if info.is_ck:
+            raise StorageError('CK 不需要采集照片。')
+        root = self._save_root or self._save_dir
+        if root is None:
+            raise StorageError('请先选择保存目录')
+        storage = prepare_row_storage(root, info=info, mode=self.mode,
+                                      extension=self.cb_format.currentText())
+        self._row_storage = storage
+        self._save_root, self._save_dir = root, storage.folder
+        self.cb_format.setCurrentText(storage.extension.upper())
+        person = self.reporter.snapshot(self.le_bearer_key.text()) if self.reporter else {}
+        self._report_context = {**person, **info.identity_payload(),
+                                'year': info.year, 'location': info.location, 'is_ck': False}
+        if self.reporter:
+            try:
+                self.reporter.outbox.set('scope_' + self.mode, {'year': info.year, 'location': info.location})
+            except sqlite3.Error:
+                raise StorageError('无法写入本地统计队列，请检查磁盘空间和目录权限。') from None
+        self.lbl_save_dir.setText(str(storage.folder))
+        self.lbl_save_dir.setToolTip(str(storage.folder))
+        if storage.notice:
+            self.view.show_warning(storage.notice, 10000)
+        self._sync_gallery_context()
+
     # ============================== 路径 ==============================
 
     def choose_save_dir(self) -> None:
         self._prompt_save_dir()
 
     def _prompt_save_dir(self) -> bool:
-        start = str(self._save_dir) if self._save_dir else ""
-        while True:
-            d = QFileDialog.getExistingDirectory(self, "选择保存文件夹(请用全英文路径)", start)
-            if not d:
-                return False
-            # 路径必须全 ASCII(英文/数字/符号)。含中文等非 ASCII 字符会导致
-            # 部分图像处理(如质量评分模型读取)异常,强制重选。
-            try:
-                d.encode("ascii")
-            except UnicodeEncodeError:
-                QMessageBox.warning(
-                    self, "路径不合法",
-                    "保存路径包含中文或非英文字符:\n"
-                    f"{d}\n\n"
-                    "请改用全英文(ASCII)路径,例如 D:/wheat_data/2026 。",
-                )
-                start = d
-                continue
-            break
-        self._save_dir = Path(d)
+        start = str(self._save_root or self._save_dir or '')
+        d = QFileDialog.getExistingDirectory(self, "选择保存目录（扫码模式将自动创建群体子目录）", start)
+        if not d:
+            return False
+        self._save_root = Path(d)
+        self._save_dir = self._save_root
+        self._report_context = None
         self._sync_gallery_context()
         self.lbl_save_dir.setText(str(self._save_dir))
         self.lbl_save_dir.setStyleSheet("color: #d8d8d8;")
@@ -2229,37 +2345,53 @@ class CaptureWidget(QWidget):
     # ============================== 麦穗工作流 ==============================
 
     def _on_workflow_start_requested(self) -> None:
-        if self.spike_panel is None or self.spike_panel.workflow.active:
+        if self.spike_panel is None or self.spike_panel.workflow.active or self._qr_request_pending:
             return
         if self._prefix_source == "manual":
-            # 手动模式保持旧行为：启动时去除输入框两端空白。
-            self._active_field_tag_code = None
-            self.spike_panel.start_with_prefix(self.le_prefix.text().strip())
+            self._start_from_manual_tag()
+        else:
+            self._start_from_field_tag_qr()
+
+    def _check_tag_key(self):
+        bearer = self.le_bearer_key.text()
+        if not bearer:
+            self.view.show_warning("请先输入 Bearer 密钥", 5000)
+            return False
+        if not bearer.isascii() or bearer != bearer.strip() or any(ord(c) < 33 or ord(c) == 127 for c in bearer):
+            self.view.show_warning("Bearer 密钥格式无效", 5000)
+            return False
+        return True
+
+    def _clear_tag_identity(self):
+        self._active_field_tag_code = None
+        self._qr_info = None
+        self._row_storage = None
+        self._report_context = None
+        self.lbl_planting_info.setText("请扫码或输入挂牌号，联网确认田间行后开始。")
+
+    def _start_from_manual_tag(self):
+        if self._qr_request_pending or self._shutting_down:
             return
-        self._start_from_field_tag_qr()
+        self._clear_tag_identity()
+        if not self._check_tag_key():
+            return
+        try:
+            code = normalize_field_tag_code(self.le_prefix.text())
+        except FieldTagError:
+            self.view.show_warning("请输入挂牌编号，例如 PCJ1；不能仅凭材料编号开始", 5000)
+            return
+        self._qr_request_id += 1
+        self._qr_request_code = code
+        self._set_qr_request_pending(True)
+        self._request_field_tag_api(self._qr_request_id, code)
 
     def _start_from_field_tag_qr(self) -> None:
         """以当前预览帧启动一次不可重入的挂牌识别请求。"""
         if self._qr_request_pending or self._shutting_down:
             return
-        self._active_field_tag_code = None
+        self._clear_tag_identity()
         self._qr_request_code = None
-        bearer = self.le_bearer_key.text()
-        if not bearer:
-            self.view.show_warning("请先输入 Bearer 密钥", 5000)
-            return
-        try:
-            bearer_bytes = bearer.encode("ascii")
-        except UnicodeEncodeError:
-            self.view.show_warning("Bearer 密钥格式无效", 5000)
-            return
-        if (
-            bearer != bearer.strip()
-            or any(byte < 33 or byte == 127 for byte in bearer_bytes)
-            or b"\r" in bearer_bytes
-            or b"\n" in bearer_bytes
-        ):
-            self.view.show_warning("Bearer 密钥格式无效", 5000)
+        if not self._check_tag_key():
             return
         frame = self._latest_preview_bgr
         if frame is None or frame.size == 0:
@@ -2403,7 +2535,11 @@ class CaptureWidget(QWidget):
             return
 
         try:
-            accession = parse_accession_response(payload)
+            info = parse_field_tag_response(payload)
+            if info.code != self._qr_request_code:
+                raise FieldTagError("返回的挂牌与请求不一致，不能开始采集")
+            if info.is_ck:
+                raise FieldTagError("CK 不需要采集照片。")
         except FieldTagError as exc:
             self._set_qr_request_pending(False)
             self.view.show_warning(str(exc), 5000)
@@ -2411,14 +2547,33 @@ class CaptureWidget(QWidget):
 
         if (
             request_id != self._qr_request_id
-            or self._prefix_source != "qr"
             or self._shutting_down
         ):
             self._invalidate_qr_request()
             return
-        self.le_prefix.setText(accession)
-        started = self.spike_panel.start_with_prefix(accession)
-        self._active_field_tag_code = self._qr_request_code if started else None
+        self._qr_info = info
+        self._active_field_tag_code = info.code
+        if self.reporter:
+            self.reporter.register_key(self.le_bearer_key.text(), info.photographer)
+        self.sp_planting_year.setValue(info.year)
+        self.cb_planting_location.setEditText(info.location)
+        self.le_prefix.setText(info.code)
+        population = info.planting_population['name'] if info.planting_population else '无群体'
+        name = info.global_material['name'] or '未填写名称'
+        replicate = info.section.get('replicate') if info.section else None
+        self.lbl_planting_info.setText(
+            f"{info.year} · {info.location} · {population}\n"
+            f"当前编号 {info.accession_no} · {name}\n"
+            f"第 {info.row_no} 行 · 挂牌 {info.code}" + (f" · 田间重复 {replicate}" if replicate else ''))
+        ok, reason = self._spike_precheck()
+        if not ok:
+            self._clear_tag_identity()
+            self._set_qr_request_pending(False)
+            self.view.show_warning(reason, 8000)
+            return
+        started = self.spike_panel.start_with_prefix(self._row_storage.prefix)
+        if not started:
+            self._clear_tag_identity()
         self._set_qr_request_pending(False)
 
     def _spike_precheck(self) -> tuple[bool, str]:
@@ -2427,6 +2582,10 @@ class CaptureWidget(QWidget):
         if self._save_dir is None:
             if not self._prompt_save_dir():
                 return False, "未设置保存文件夹,已取消开始"
+        try:
+            self._prepare_reporting_context()
+        except (OSError, ValueError) as exc:
+            return False, str(exc)
         return True, ""
 
     def _spike_file_exists(self, rep: int, side: str) -> bool:
@@ -2447,7 +2606,10 @@ class CaptureWidget(QWidget):
     def _on_workflow_state_changed(self, active: bool) -> None:
         """工作流启用/禁用时,锁定/解锁普通的文件名设置控件。"""
         if not active:
-            self._active_field_tag_code = None
+            self._clear_tag_identity()
+            if self._deferred_bearer_key is not None:
+                value, self._deferred_bearer_key = self._deferred_bearer_key, None
+                self.set_bearer_key(value)
         self._update_prefix_source_controls()
         if active:
             self._sync_gallery_context()
@@ -2459,17 +2621,17 @@ class CaptureWidget(QWidget):
     def _on_workflow_completed(self) -> None:
         """全部 PASSED 后由 SpikePanel 发出 — 这里只做提示。"""
         self.gallery.mark_complete()
-        self._status("✓ 当前品种已全部保存,1.5s 后看板自动重置", side=True)
+        self._status("✓ 当前田间行本轮采集已保存，1.5s 后看板自动重置", side=True)
 
     def _clear_prefix_after_workflow(self) -> None:
         """整轮工作流完成自动重置时清空品种前缀,防止下一品种忘改覆盖照片。"""
-        self._active_field_tag_code = None
+        self._clear_tag_identity()
         self.le_prefix.clear()
         if self._prefix_source == "manual":
             self.le_prefix.setFocus()
-            message = "已清空品种前缀 — 请输入下一品种再开始"
+            message = "请输入下一张挂牌号再开始"
         else:
-            message = "已清空品种前缀 — 请识别下一张挂牌二维码"
+            message = "请识别下一张挂牌二维码"
         self._status(message, side=True)
 
     # ============================== 关闭 ==============================
@@ -2481,6 +2643,7 @@ class CaptureWidget(QWidget):
             return False
         self._shutting_down = True
         self._capacity_timer.stop()
+        self._sync_status_timer.stop()
         self.gallery.shutdown()
         if self._owns_pipeline:
             self.pipeline.shutdown()

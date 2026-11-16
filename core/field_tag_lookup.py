@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
+from uuid import UUID
 
 import cv2
 import numpy as np
@@ -34,6 +35,99 @@ class FieldTagDetection:
 
     code: str
     points: np.ndarray
+
+
+@dataclass(frozen=True)
+class FieldTagInfo:
+    accession_no: str
+    year: int
+    location: str
+    planting_population: dict | None
+    photographer: dict
+    is_ck: bool
+    code: str
+    planting_entry_id: int
+    planting_plan_id: int
+    row_no: str
+    global_material: dict | None
+    membership: dict | None
+    section: dict | None
+    source_reference: dict
+
+    @property
+    def filename_prefix(self):
+        return validate_windows_filename_segment(f"{self.accession_no}_行{self.row_no}")
+
+    def identity_payload(self):
+        return dict(schema_version=2, planting_entry_id=self.planting_entry_id,
+                    planting_plan_id=self.planting_plan_id,
+                    global_material_id=self.global_material['id'] if self.global_material else None,
+                    membership_id=self.membership['id'] if self.membership else None,
+                    planting_population_id=self.planting_population['id'] if self.planting_population else None,
+                    section_id=self.section['id'] if self.section else None)
+
+    def snapshot(self):
+        return asdict(self)
+
+
+def parse_field_tag_response(payload) -> FieldTagInfo:
+    try:
+        data = json.loads(payload)
+    except (UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise FieldTagError('服务器返回的内容不是有效 JSON') from exc
+    required = {'schema_version', 'code', 'planting_entry_id', 'planting_plan_id',
+                'current_material_no', 'global_material', 'membership', 'planting_population',
+                'section', 'row_no', 'year', 'location', 'photographer', 'is_ck', 'source_reference'}
+    if not isinstance(data, dict) or not required <= data.keys() or type(data['schema_version']) is not int or data['schema_version'] != 2:
+        raise FieldTagError('挂牌服务缺少新版种植身份字段，请先升级平台接口')
+    def positive(value):
+        return type(value) is int and value > 0
+    for key in ('planting_entry_id', 'planting_plan_id'):
+        if not positive(data[key]):
+            raise FieldTagError('挂牌缺少有效的种植表或田间行 ID')
+    year, location = data['year'], data['location']
+    if type(year) is not int or not 1900 <= year <= 2200 or not isinstance(location, str) or not location.strip() or len(location) > 120:
+        raise FieldTagError('挂牌缺少有效的种植年份、地点')
+    person, population = data['photographer'], data['planting_population']
+    if not isinstance(person, dict) or not positive(person.get('id')) or not isinstance(person.get('display_name'), str) or not person['display_name'].strip():
+        raise FieldTagError('挂牌服务未返回密钥所有者')
+    if type(data['is_ck']) is not bool:
+        raise FieldTagError('挂牌类型无效')
+    is_ck = data['is_ck']
+    material, member, section = data['global_material'], data['membership'], data['section']
+    if population is not None and (not isinstance(population, dict) or not positive(population.get('id')) or not isinstance(population.get('name'), str) or not population['name'].strip()):
+        raise FieldTagError('本次种植群体字段无效')
+    if member is not None and (not isinstance(member, dict) or not positive(member.get('id')) or not population or member.get('population_id') != population['id'] or not isinstance(member.get('accession_no'), str) or not member['accession_no'].strip()):
+        raise FieldTagError('当前成员与种植群体不一致')
+    if section is not None and (not isinstance(section, dict) or not positive(section.get('id')) or not isinstance(section.get('label'), str) or not isinstance(section.get('description'), str) or (section.get('replicate') is not None and not positive(section['replicate']))):
+        raise FieldTagError('种植区段字段无效')
+    if not is_ck:
+        try:
+            if not isinstance(material, dict) or not isinstance(material.get('name'), str):
+                raise ValueError
+            UUID(material['id'])
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise FieldTagError('挂牌缺少有效的全局材料身份') from exc
+        if population is not None and member is None:
+            raise FieldTagError('种植群体缺少当前成员关联')
+        for value in (material, member, population):
+            if value is not None and value.get('is_active') is False:
+                raise FieldTagError('材料、当前成员或种植群体已停用，不能开始采集')
+    number, row_no = data['current_material_no'], data['row_no']
+    if not isinstance(number, str) or not number.strip() or len(number) > 160:
+        raise FieldTagError('挂牌缺少当前成员编号或独立材料标识')
+    if member and number != member['accession_no']:
+        raise FieldTagError('挂牌当前编号与成员编号不一致')
+    if not isinstance(row_no, str) or not row_no.strip() or len(row_no) > 80:
+        raise FieldTagError('挂牌缺少有效田间行号')
+    if not isinstance(data['source_reference'], dict):
+        raise FieldTagError('挂牌来源字段无效')
+    info = FieldTagInfo(number, year, location, population, person, is_ck,
+                        normalize_field_tag_code(data['code']), data['planting_entry_id'],
+                        data['planting_plan_id'], row_no, material, member, section, data['source_reference'])
+    if not is_ck:
+        info.filename_prefix
+    return info
 
 
 def normalize_field_tag_code(value: Any) -> str:

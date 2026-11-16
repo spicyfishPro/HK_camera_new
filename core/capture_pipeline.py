@@ -50,6 +50,7 @@ class CaptureJob:
     reserved_bytes: int
     overwrite: bool = False
     submitted_at: float = field(default_factory=time.perf_counter)
+    reporting: dict | None = field(default=None, compare=False, repr=False)
 
     @property
     def id(self) -> str:
@@ -107,10 +108,12 @@ class CapturePipeline:
         max_jobs=8,
         max_bytes=768 * 1024 * 1024,
         saver=save_bgr_atomic,
+        primary_saved=None,
     ):
         self.notify = notify
         self.max_jobs, self.max_bytes = max_jobs, max_bytes
         self._saver = saver
+        self.primary_saved = primary_saved
         self._lock = threading.RLock()
         self._records: dict[str, _Record] = {}
         self._preparer = ThreadPoolExecutor(1, thread_name_prefix="capture-prepare")
@@ -330,6 +333,9 @@ class CapturePipeline:
                     continue
                 result = self._saver(image, path, metadata, overwrite=job.overwrite)
                 record.completed.add(path)
+                if path == job.path and self.primary_saved is not None:
+                    # 主图成功即记录；raw 失败后的重试不会再次累计。
+                    self.primary_saved(job)
                 record.timings["encode_s"] = (
                     record.timings.get("encode_s", 0) + result.encode_s
                 )

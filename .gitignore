@@ -17,6 +17,7 @@ dist/
 # Runtime output and machine-local settings
 logs/
 calibration/
+capture-progress/
 
 # Editors and operating systems
 .DS_Store

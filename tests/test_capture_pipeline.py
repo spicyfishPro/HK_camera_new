@@ -94,6 +94,37 @@ class PipelineTests(unittest.TestCase):
         self.pipelines.append(p)
         return p
 
+    def test_primary_saved_is_reported_once_even_when_quality_fails_and_raw_retries(self):
+        reported, failed = [], set()
+        def saver(image, path, metadata, **kwargs):
+            if path.stem.endswith('_raw') and path not in failed:
+                failed.add(path)
+                raise OSError('raw disk failure')
+            return SaveResult(path, True, 'XMP')
+        p = self.pipeline(saver=saver, primary_saved=lambda capture: reported.append(capture.id))
+        capture = job(self.folder, 1, raw=True, score=100)
+        self.assertTrue(p.submit(capture))
+        self.assertTrue(wait_for(lambda: p.has_failures))
+        self.assertEqual(reported, ['1'])
+        self.assertTrue(p.retry('1'))
+        self.assertTrue(wait_for(lambda: p.pending_count == 0))
+        self.assertEqual(reported, ['1'])
+
+    def test_failed_main_image_is_not_reported(self):
+        reported, failed = [], set()
+        def saver(image, path, metadata, **kwargs):
+            if path not in failed:
+                failed.add(path)
+                raise OSError('main disk failure')
+            return SaveResult(path, True, 'XMP')
+        p = self.pipeline(saver=saver, primary_saved=lambda capture: reported.append(capture.id))
+        self.assertTrue(p.submit(job(self.folder, 1)))
+        self.assertTrue(wait_for(lambda: p.has_failures))
+        self.assertEqual(reported, [])
+        self.assertTrue(p.retry('1'))
+        self.assertTrue(wait_for(lambda: p.pending_count == 0))
+        self.assertEqual(reported, ['1'])
+
     def test_three_second_writes_do_not_block_quality_of_next_capture(self):
         def slow_save(image, path, metadata, **kwargs):
             time.sleep(3)

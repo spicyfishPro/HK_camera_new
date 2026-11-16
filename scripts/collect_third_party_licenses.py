@@ -10,6 +10,7 @@ import json
 import platform
 import shutil
 import sys
+import sysconfig
 from importlib import metadata
 from pathlib import Path, PurePosixPath
 
@@ -74,6 +75,7 @@ def collect_licenses(destination, *, project_root=None, distribution=metadata.di
     python_version = platform.python_version()
     python_license = next((p for p in (
         Path(sys.base_prefix) / "LICENSE.txt", Path(sys.base_prefix) / "LICENSE",
+        Path(sysconfig.get_path("stdlib")) / "LICENSE.txt",
         root / "licenses" / f"Python-{python_version}.txt",
     ) if p.is_file()), None)
     if python_license is None:

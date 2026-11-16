@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 import types
+import tempfile
 import unittest
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -12,6 +14,7 @@ import numpy as np
 from core.capture_pipeline import CaptureEvent
 from core.spike_workflow import StepStatus
 from test_acquisition_metadata import sample_metadata
+from capture_fixtures import tag_payload
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -47,7 +50,19 @@ try:
     sys.modules["core.camera"] = camera_module
 
     from ui.capture_widget import CaptureWidget
-    from ui.main_window import MainWindow
+    from ui.main_window import MainWindow as _MainWindow
+    from core.progress_sync import SyncService
+
+    class MainWindow(_MainWindow):
+        """窗口回归及渲染使用隔离队列，不访问生产接口。"""
+        def __init__(self):
+            self._reporter_temp = tempfile.TemporaryDirectory()
+            super().__init__(reporter=SyncService(Path(self._reporter_temp.name), start=False))
+
+        def closeEvent(self, event):
+            super().closeEvent(event)
+            if event.isAccepted():
+                self._reporter_temp.cleanup()
 except (ImportError, OSError):
     QT_AVAILABLE = False
 else:
@@ -120,7 +135,7 @@ class QrUiTests(unittest.TestCase):
     def test_default_manual_and_qr_mode_locks_prefix(self):
         self.assertTrue(self.widget.btn_prefix_manual.isChecked())
         self.assertTrue(self.widget.le_prefix.isEnabled())
-        self.assertTrue(self.widget.le_bearer_key.isHidden())
+        self.assertFalse(self.widget.le_bearer_key.isHidden())
         self._select_qr_mode()
         self.assertFalse(self.widget.le_prefix.isEnabled())
         self.assertFalse(self.widget.le_bearer_key.isHidden())
@@ -139,12 +154,16 @@ class QrUiTests(unittest.TestCase):
         self.assertEqual(self.widget.cb_rotate.currentData(), 180)
         self.assertEqual(self.widget._rotation_deg, 180)
 
-    def test_manual_mode_starts_with_existing_trimmed_prefix_behavior(self):
-        start = Mock(return_value=True)
-        self.widget.spike_panel.start_with_prefix = start
-        self.widget.le_prefix.setText("  SX001  ")
-        self.widget._on_workflow_start_requested()
-        start.assert_called_once_with("SX001")
+    def test_manual_mode_resolves_tag_and_never_starts_from_material_number(self):
+        self.widget.le_bearer_key.setText('test-key')
+        with patch.object(self.widget, '_request_field_tag_api') as lookup:
+            self.widget.le_prefix.setText('SX001')
+            self.widget._on_workflow_start_requested()
+            lookup.assert_not_called()
+            self.widget.le_prefix.setText('  pabc123  ')
+            self.widget._on_workflow_start_requested()
+            lookup.assert_called_once_with(self.widget._qr_request_id, 'PABC123')
+        self.assertFalse(self.widget.spike_panel.workflow.active)
 
     def test_empty_key_and_missing_preview_do_not_start_detection(self):
         self._select_qr_mode()
@@ -167,22 +186,22 @@ class QrUiTests(unittest.TestCase):
             self.assertEqual(thread.call_count, 1)
         self.assertTrue(self.widget._qr_request_pending)
 
-    def test_success_response_fills_original_accession_and_starts(self):
+    def test_success_response_uses_current_member_and_row_prefix(self):
         self._select_qr_mode()
-        start = Mock(return_value=True)
-        self.widget.spike_panel.start_with_prefix = start
-        self.widget._qr_request_id = 5
-        self.widget._qr_request_code = "PABC123"
-        self.widget._set_qr_request_pending(True)
-        reply = _FakeReply(
-            200, b'{"material": {"accession_no": "CK"}}'
-        )
-        self.widget._on_field_tag_reply_finished(5, reply)
-        self.assertEqual(self.widget.le_prefix.text(), "CK")
-        start.assert_called_once_with("CK")
-        self.assertFalse(self.widget._qr_request_pending)
-        self.assertTrue(reply.deleted)
-        self.assertEqual(self.widget._active_field_tag_code, "PABC123")
+        with tempfile.TemporaryDirectory() as folder:
+            self.widget._save_dir = Path(folder)
+            self.widget._qr_request_id = 5
+            self.widget._qr_request_code = 'PABC123'
+            self.widget._set_qr_request_pending(True)
+            reply = _FakeReply(200, json.dumps(tag_payload(number='RIL8', code='PABC123')).encode())
+            self.widget._on_field_tag_reply_finished(5, reply)
+            self.assertEqual(self.widget.le_prefix.text(), 'PABC123')
+            self.assertEqual(self.widget.spike_panel.workflow.prefix, 'RIL8_行1')
+            self.assertFalse(self.widget._qr_request_pending)
+            self.assertTrue(reply.deleted)
+            self.assertEqual(self.widget._active_field_tag_code, 'PABC123')
+            self.assertIn('RIL8', self.widget.lbl_planting_info.text())
+            self.assertNotIn('旧群体', str(self.widget._save_dir))
 
     def _event(self, state, **kwargs):
         wf = self.widget.spike_panel.workflow

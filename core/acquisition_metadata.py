@@ -25,7 +25,7 @@ from .build_info import get_build_info
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "wheat.capture.v1"
+SCHEMA_VERSION = "wheat.capture.v2"
 XMP_NAMESPACE = "https://wheat.cau.edu.cn/ns/rgb-capture/1.0/"
 
 
@@ -168,6 +168,8 @@ class CaptureMetadata:
     ffc_calibration_id: str | None
     output_width: int
     output_height: int
+    planting: dict | None = None
+    filename_prefix: str | None = None
 
     @classmethod
     def new_capture_id(cls) -> str:
@@ -189,9 +191,11 @@ class CaptureMetadata:
             "captured_at": self.captured_at,
             "sample": {
                 "accession_no": self.accession_no,
+                "filename_prefix": self.filename_prefix,
                 "prefix_source": self.prefix_source,
                 "field_tag_code": self.field_tag_code,
             },
+            "planting": self.planting,
             "workflow": {
                 "mode": self.mode,
                 "active": self.workflow_active,
