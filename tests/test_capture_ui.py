@@ -14,7 +14,7 @@ import cv2
 # 同现有 UI 测试使用相机替身，不加载本机 MVS DLL。
 from test_qr_ui import QT_AVAILABLE, QApplication, CaptureWidget, _FakeScorer
 from test_acquisition_metadata import sample_metadata, sample_frame
-from core.acquisition_metadata import FrameSnapshot, SaveResult
+from core.acquisition_metadata import FrameSnapshot, SaveResult, save_bgr_atomic
 from core.capture_pipeline import CaptureEvent
 from capture_fixtures import tag_info
 
@@ -133,18 +133,22 @@ class CaptureUiTests(unittest.TestCase):
 
     def test_history_context_and_corrupt_file(self):
         (self.folder / "A_行1_Rep1_front.png").write_bytes(b"bad png")
-        cv2.imwrite(
-            str(self.folder / "A_行1_Rep1_side.png"), np.ones((20, 30, 3), np.uint8)
-        )
-        cv2.imwrite(
-            str(self.folder / "A1_Rep1_front.png"), np.ones((20, 30, 3), np.uint8)
-        )
+        # OpenCV imwrite does not preserve Chinese Windows paths. Exercise the
+        # same Unicode-safe atomic save path used by the actual capture app.
+        for name in ("A_行1_Rep1_side.png", "A1_Rep1_front.png"):
+            path = self.folder / name
+            saved = save_bgr_atomic(np.ones((20, 30, 3), np.uint8), path,
+                                    replace(sample_metadata(), filename=name))
+            self.assertTrue(saved.metadata_embedded)
+            self.assertTrue(path.is_file())
         g = self.widget.gallery
         g.scan()
         self.assertTrue(
             pump(lambda: sum(e.state == "history" for e in g.entries.values()) == 2)
         )
         self.assertTrue(all(e.score is None for e in g.entries.values()))
+        g.viewer.open_entry(next(e for e in g.entries.values() if e.side == 'side'))
+        self.assertTrue(pump(lambda: not g.viewer.item.pixmap().isNull()))
         old_generation = g.generation
         g.set_context(self.folder, "B", "wheat", 1)
         g._loaded((old_generation, "scan", "scan", [], ""))
